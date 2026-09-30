@@ -34,7 +34,7 @@ jobs:
               build-essential cmake libssl-dev libpq-dev pkg-config \
               git ca-certificates
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Configure
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DGOOGLE_AUTH_BUILD_TESTS=ON
@@ -50,11 +50,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # Только проверка, что образ собирается; никуда не публикуется.
       - name: Build image
         run: |
           docker build \
               --build-arg GIT_COMMIT="$(git rev-parse --short=8 HEAD)" \
-              -t google-auth:ci .
+              -f Containerfile -t google-auth:ci .
