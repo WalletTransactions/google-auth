@@ -4,7 +4,7 @@ Auth-сервис проекта: "Sign in with Google" (OAuth 2.0 Authorization
 PKCE), криптографическая проверка `id_token` по JWKS Google и своя сессия
 (JWT) поверх неё. CRUD кошельков раньше жил тут же как пример защищённого
 REST — теперь выделен в отдельный сервис со своей БД, см.
-[wallet-api](https://github.com/WalletTransactions/wallet-api/tree/main/.); этот сервис он использует только для проверки
+[wallet-api](https://github.com/WalletTransactions/wallet-api); этот сервис он использует только для проверки
 токена (JWKS), как и wallet-bff/wallet-gateway.
 
 Полное описание HTTP API (пути, тела запросов/ответов, коды ошибок) —
@@ -59,7 +59,7 @@ sudo apt-get update && sudo apt-get install -y build-essential cmake libssl-dev 
 
 ### Через гейтвей, не напрямую
 
-`REDIRECT_URL` указывает на [wallet-gateway](https://github.com/WalletTransactions/wallet-gateway/tree/main/.) (`:8090`), а
+`REDIRECT_URL` указывает на [wallet-gateway](https://github.com/WalletTransactions/wallet-gateway) (`:8090`), а
 не на этот сервис (`:8080`) — так Google возвращает браузер на гейтвей,
 который прозрачно проксирует `GET /auth/google/callback` сюда (префикс
 `/auth/*` у гейтвея не под JWT-гейтом, см. его README) и отдаёт ответ
@@ -193,7 +193,7 @@ build\Release\google_auth.exe    # Windows (из корня проекта)
 - `util/` — base64url, SHA-256/RSA-SHA256-sign-и-verify (тонкая обёртка над OpenSSL, включая `RsaSigningKey` — RAII над приватным ключом, см. `crypto.hpp`), минимальный JWT (sign/verify RS256) поверх этого, UUID v4, url-encode, мини-dotenv, время (`now_epoch()`), логирование.
 
 Пример защищённого JSON REST поверх выпущенного здесь access-токена — теперь
-не тут, а в [wallet-api](../wallet-api/src/wallet.cpp) (`POST`/`DELETE
+не тут, а в [wallet-api](https://github.com/WalletTransactions/wallet-api) (`POST`/`DELETE
 /api/wallets`), см. его README.
 
 ### Проверка токенов другими сервисами (JWKS)
@@ -343,7 +343,7 @@ UPDATE users SET role_id = 3 WHERE email = 'someone@example.com'; -- 3 = admin
 пользователей там же, только `Role::Admin`). Раньше здесь же жила вторая
 проверка — доступ `support`/`admin` к чужим кошелькам (`wallet.cpp
 ::can_read/can_write`) — она уехала вместе с кошельками в
-[wallet-api](https://github.com/WalletTransactions/wallet-api/tree/main/.); тот сервис её сознательно не переносил (владелец,
+[wallet-api](https://github.com/WalletTransactions/wallet-api); тот сервис её сознательно не переносил (владелец,
 без исключений, см. его README, "Что реализовано, а что нет"), но claim
 `role` в токене всё ещё доступен, если это понадобится там в будущем.
 
@@ -554,7 +554,7 @@ CHECK `device.platform` в wallet-api. Иначе неизвестное зна�
 /api/wallets` (на wallet-api) и `POST /auth/logout` (на этом сервисе) через
 `fetch()`, авторизация — той же cookie `session`, без ручного ввода токена.
 Работает без CORS-проблем ровно потому, что страница открыта через
-[wallet-gateway](https://github.com/WalletTransactions/wallet-gateway/tree/main/.) — см. "Через гейтвей, не напрямую" выше:
+[wallet-gateway](https://github.com/WalletTransactions/wallet-gateway) — см. "Через гейтвей, не напрямую" выше:
 её origin `:8090`, туда же уходит relative `fetch('/api/wallets')`, а гейтвей
 проксирует на wallet-api. Если же открыть success-страницу напрямую на
 `:8080` (в обход гейтвея) — кнопки получат `404`, wallet-api там не слушает;
@@ -938,6 +938,6 @@ ACID, связи, долгая жизнь записи без TTL, куда Redi
 - JWKS Google запрашивается заново на каждый вход — в проде стоит кешировать по `Cache-Control` из ответа Google.
 - `access_type=online` (без refresh_token у Google) — задача сервиса разовая верификация, а не долгоживущий доступ к Google API от имени пользователя (не путать с нашим собственным refresh-токеном — это другая, не Google-овская сущность).
 - Ротация refresh-токена есть, полноценный детект кражи (отзыв всей цепочки при повторном использовании уже потраченного токена) — нет. Для прод-уровня безопасности стоит добавить: помечать скомпрометированной всю "семью" токенов, если бывший в употреблении токен предъявили повторно.
-- `auth`/`wallet` уже разъехались в отдельные сервисы (см. [wallet-api](https://github.com/WalletTransactions/wallet-api/tree/main/.)) — подпись асимметричная (RS256), auth-сервис публикует публичный ключ на `/.well-known/jwks.json`, а остальные сервисы валидируют токен по нему локально, без похода в auth на каждый запрос — точно так же, как этот сервис сейчас проверяет `id_token` Google.
+- `auth`/`wallet` уже разъехались в отдельные сервисы (см. [wallet-api](https://github.com/WalletTransactions/wallet-api)) — подпись асимметричная (RS256), auth-сервис публикует публичный ключ на `/.well-known/jwks.json`, а остальные сервисы валидируют токен по нему локально, без похода в auth на каждый запрос — точно так же, как этот сервис сейчас проверяет `id_token` Google.
 - На Windows `libpq.dll` (и её зависимости — `libssl-3-x64.dll`, `libcrypto-3-x64.dll`, `libintl-9.dll`, `libiconv-2.dll`) линкуются динамически и копируются рядом с `.exe` автоматически при сборке (см. `CMakeLists.txt`) — при ручном переносе бинарника на другую машину не забудьте прихватить и их.
 - `redis_client.hpp/.cpp` держит одно TCP-соединение под мьютексом (тот же паттерн, что и `db.hpp`) и не переподключается сам при обрыве — при сетевой аварии между `google-auth` и Redis сервис нужно перезапустить (или доработать клиент реконнектом), само не восстановится. Для реальной нагрузки — то же самое замечание, что и про Postgres выше: один коннект достаточен для демо-масштаба, не для прод-нагрузки.
