@@ -1,0 +1,9 @@
+build
+out
+logs
+.env
+.env.example
+jwt_signing_key.pem
+Containerfile
+.containerignore
+README.md

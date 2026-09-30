@@ -1,0 +1,217 @@
+#include "db.hpp"
+
+#include <chrono>
+#include <initializer_list>
+#include <stdexcept>
+
+#include <libpq-fe.h>
+
+#include "nlohmann/json.hpp"
+#include "util/log.hpp"
+
+namespace {
+
+// Встроенный набор имён параметров, чьи значения ВСЕГДА маскируются в логе
+// (см. mask_param_names_/exec() в db.hpp), даже когда log_params_ включён —
+// работает, только если вызывающий код указал это имя параметру через
+// param_names. Общие секреты, а не то, что реально хранится в этой БД сейчас
+// (в roles/users секретов нет — токены в Redis, см. AppState::redis) — задел
+// на будущее, чтобы решение о маскировке не принималось заново в каждом
+// месте, которое такую колонку когда-нибудь заведёт.
+const std::unordered_set<std::string>& builtin_mask_param_names() {
+    static const std::unordered_set<std::string> names = {
+        "password", "client_secret", "refresh_token", "access_token", "id_token", "token", "secret",
+    };
+    return names;
+}
+
+} // namespace
+
+namespace db {
+
+Database::Database(const std::string& conninfo, bool log_params,
+                    const std::unordered_set<std::string>& mask_param_names)
+    : log_params_(log_params), mask_param_names_(builtin_mask_param_names()) {
+    mask_param_names_.insert(mask_param_names.begin(), mask_param_names.end());
+    conn_ = PQconnectdb(conninfo.c_str());
+    if (PQstatus(conn_) != CONNECTION_OK) {
+        std::string err = PQerrorMessage(conn_);
+        PQfinish(conn_);
+        conn_ = nullptr;
+        throw std::runtime_error("не удалось подключиться к Postgres: " + err);
+    }
+}
+
+Database::~Database() {
+    if (conn_ != nullptr) PQfinish(conn_);
+}
+
+void Database::verify_schema() {
+    // Раньше здесь были CREATE TABLE IF NOT EXISTS (roles/users/
+    // refresh_tokens) — теперь эта роль их создать не может (нет DDL, см.
+    // db.hpp). Схема живёт в infra/db/init-db.sh (в корне репозитория) — этот
+    // метод только проверяет, что она уже накачена. "refresh_tokens" больше
+    // не в списке — эти токены переехали в Redis (см. AppState::redis,
+    // repo.hpp), у Postgres для google-auth остались только roles/users.
+    for (const char* table : {"roles", "users"}) {
+        auto res = exec("SELECT to_regclass('public.' || $1)::text", {table});
+        if (res.rows.empty() || res.rows[0].fields.at(0).empty()) {
+            throw std::runtime_error(
+                std::string("таблица '") + table + "' не найдена — схема ещё не накачена. "
+                "Запустите infra/db/init-db.sh (в docker/podman-сценарии — при первом старте "
+                "контейнера db он выполняется сам) или см. infra/db/README.md.");
+        }
+    }
+}
+
+Result Database::exec(const std::string& sql, const std::vector<std::string>& params,
+                       const std::vector<std::string>& param_names) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    // Тот же случай, что уже ловили в wallet-api (2026-09-17, см. его db.cpp):
+    // если это соединение умерло между запросами (сеть/соседний контейнер, не
+    // сам Postgres), PQexecParams на мёртвом conn_ сам не восстанавливается —
+    // без переподключения здесь КАЖДЫЙ следующий запрос падал бы 500 до
+    // перезапуска процесса. PQreset() переоткрывает соединение ТЕМИ ЖЕ
+    // параметрами, что были у PQconnectdb() при создании этой Database.
+    if (PQstatus(conn_) != CONNECTION_OK) {
+        applog::warn("db connection is down, reconnecting");
+        PQreset(conn_);
+        if (PQstatus(conn_) != CONNECTION_OK) {
+            std::string err = PQerrorMessage(conn_);
+            applog::error("db reconnect failed", {{"event", "db_reconnect_failed"}, {"error", err}});
+            throw std::runtime_error("Postgres: соединение потеряно, переподключиться не удалось: " + err);
+        }
+        applog::info("db reconnected", {{"event", "db_reconnected"}});
+    }
+
+    std::vector<const char*> values;
+    values.reserve(params.size());
+    for (const auto& p : params) values.push_back(p.c_str());
+
+    // steady_clock — для длительности, а не system_clock: последний может
+    // скакнуть назад (NTP-коррекция, перевод времени), тогда latency ушла бы
+    // в отрицательную. Мьютекс уже захвачен выше — таймер меряет время
+    // именно самого PQexecParams, а не ожидания на mutex_ перед ним (тут
+    // конкуренция за одно соединение и так означала бы, что latency в логе
+    // одного запроса включала бы чужое время выполнения — вводило бы в
+    // заблуждение).
+    auto started = std::chrono::steady_clock::now();
+    PGresult* res = PQexecParams(conn_, sql.c_str(), static_cast<int>(values.size()),
+                                  nullptr /* типы параметров — пусть Postgres выведет сам */,
+                                  values.data(), nullptr, nullptr, 0 /* текстовый формат */);
+    double duration_ms =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started)
+            .count();
+
+    // sql — безопасно логировать всегда: это текст с $1/$2/... плейсхолдерами
+    // (PQexecParams, не конкатенация строк), литеральных значений в нём нет.
+    // Сами params — потенциально чувствительные данные приложения (email и
+    // т.п.) — попадают в лог, только если явно попросили (см. log_params_ в
+    // db.hpp); из них те, чьё имя (param_names, по позиции) входит в
+    // mask_param_names_, всё равно маскируются "***" — секрет не должен
+    // осесть в логе в открытом виде, даже когда параметры логируются
+    // намеренно для отладки (см. db.hpp).
+    // "event" здесь — та же машиночитаемая метка, что и "request_finished"
+    // на строке set_logger (см. main.cpp) — отличает СТРОКУ ПРО ДЛИТЕЛЬНОСТЬ
+    // ОДНОГО SQL-ВЫЗОВА от строки про длительность ВСЕГО запроса целиком:
+    // у обеих есть duration_ms, но это разные величины, агрегировать их
+    // вместе в Dashboards без разбора msg (см. main.cpp) нельзя.
+    nlohmann::json details = {{"event", "db_query"}, {"sql", sql}, {"duration_ms", duration_ms}};
+    if (log_params_) {
+        nlohmann::json logged = nlohmann::json::array();
+        for (std::size_t i = 0; i < params.size(); ++i) {
+            bool masked = i < param_names.size() && !param_names[i].empty() &&
+                          mask_param_names_.count(param_names[i]) != 0;
+            logged.push_back(masked ? std::string("***") : params[i]);
+        }
+        details["params"] = std::move(logged);
+    }
+
+    ExecStatusType status = PQresultStatus(res);
+    if (status != PGRES_TUPLES_OK && status != PGRES_COMMAND_OK) {
+        std::string err = PQresultErrorMessage(res);
+        PQclear(res);
+        details["event"] = "db_query_failed";
+        details["error"] = err;
+        applog::error("db query failed", details);
+        throw std::runtime_error("Postgres: " + err);
+    }
+
+    Result out;
+    int nrows = PQntuples(res);
+    int ncols = PQnfields(res);
+    out.rows.reserve(static_cast<size_t>(nrows));
+    for (int r = 0; r < nrows; ++r) {
+        Row row;
+        row.fields.reserve(static_cast<size_t>(ncols));
+        for (int c = 0; c < ncols; ++c) {
+            row.fields.emplace_back(PQgetisnull(res, r, c) != 0 ? std::string{}
+                                                                 : std::string(PQgetvalue(res, r, c)));
+        }
+        out.rows.push_back(std::move(row));
+    }
+    PQclear(res);
+
+    // rows — сколько строк ВЕРНУЛОСЬ (PQntuples): для SELECT (verify_schema
+    // выше) это и есть содержательное число; в этом сервисе нет
+    // INSERT/UPDATE/DELETE без RETURNING, для которых пришлось бы отдельно
+    // смотреть PQcmdTuples() — не усложняем ради случая, которого нет.
+    details["rows"] = out.rows.size();
+    // debug, не info — строка на КАЖДЫЙ SQL-вызов, под нагрузкой это
+    // гигабайты лога. Отключается LOG_LEVEL=info (см. log.hpp);
+    // db_query_failed выше — по-прежнему error.
+    applog::debug("db query", details);
+
+    return out;
+}
+
+Pool::Pool(const std::string& conninfo, std::size_t size, bool log_params,
+           const std::unordered_set<std::string>& mask_param_names) {
+    if (size == 0) throw std::runtime_error("db::Pool: size должен быть хотя бы 1");
+    conns_.reserve(size);
+    // Каждая Database сама бросает std::runtime_error при неудаче (см. её
+    // конструктор) — падаем здесь же, при старте процесса (main.cpp), а не
+    // тихо остаёмся с пулом меньше запрошенного размера.
+    for (std::size_t i = 0; i < size; ++i) {
+        conns_.push_back(std::make_unique<Database>(conninfo, log_params, mask_param_names));
+    }
+    idle_.reserve(size);
+    for (auto& c : conns_) idle_.push_back(c.get());
+}
+
+void Pool::verify_schema() {
+    conns_.front()->verify_schema();
+}
+
+Pool::Lease::Lease(Lease&& other) noexcept : pool_(other.pool_), conn_(other.conn_) {
+    other.pool_ = nullptr;
+    other.conn_ = nullptr;
+}
+
+Pool::Lease::~Lease() {
+    // pool_ == nullptr — из этого Lease уже переместили (см. move-конструктор
+    // выше): ему возвращать соединение в пул не нужно, это сделает тот Lease,
+    // в который его переместили.
+    if (pool_ != nullptr) pool_->release(conn_);
+}
+
+Pool::Lease Pool::acquire() {
+    std::unique_lock<std::mutex> lock(mutex_);
+    cv_.wait(lock, [this] { return !idle_.empty(); });
+    Database* conn = idle_.back();
+    idle_.pop_back();
+    return Lease(this, conn);
+}
+
+void Pool::release(Database* conn) {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        idle_.push_back(conn);
+    }
+    // notify_one, не _all — ровно одно соединение освободилось, будить всех
+    // ожидающих acquire() ради него было бы лишней работой.
+    cv_.notify_one();
+}
+
+} // namespace db

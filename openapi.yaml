@@ -1,0 +1,939 @@
+openapi: 3.1.0
+info:
+  title: google-auth
+  version: "1.0.0"
+  description: |
+    Вход через Google (Authorization Code + PKCE для браузера, id_token +
+    Credential Manager для Android) и собственная сессия проекта (JWT RS256
+    access + непрозрачный ротируемый refresh). См. `google-auth/README.md`
+    за обоснованиями и `org/docs/TODO_mobile_sync.md` за историей решений.
+
+    В проде запросы обычно идут через `wallet-gateway` (порт 8090), который
+    проксирует `/auth/*` и `/admin/*` СЮДА БЕЗ собственной проверки токена —
+    ролевые проверки (admin-only на `/admin/*`, обычный auth на остальном)
+    делает сам этот сервис, не гейтвей (см. `wallet-gateway/README.md`,
+    "Почему не дублируем авторизацию"). Ниже — прямой адрес самого сервиса.
+
+    **Известные особенности, отличающие поведение от типичного REST (см. код,
+    не только README):**
+    - `GET /auth/google/callback` и `POST /auth/google/confirm-signup`
+      НИКОГДА не возвращают HTTP-код ошибки на неудачу — все ветки ошибок
+      рендерят HTML-страницу с текстом причины при статусе **200**. Различать
+      успех/неудачу можно только по итоговому URL (302 на `/` — успех) или по
+      содержимому HTML.
+    - Мгновенный отзыв токена (`/auth/logout`, `/admin/users/{id}/logout`,
+      `/auth/devices/revoke*`) действует ТОЛЬКО для проверок внутри этого
+      сервиса (`GET /auth/me`, `/admin/*`) — `wallet-api`/`wallet-gateway`
+      проверяют access-токен по JWKS локально и о таком отзыве не узнают:
+      токен у них "работает" до истечения `exp` (обычно 15 минут).
+servers:
+  - url: http://localhost:8080
+    description: Прямой адрес сервиса (по умолчанию, см. .env.example — PORT)
+
+tags:
+  - name: browser-login
+    description: Вход через Google в браузере (Authorization Code + PKCE)
+  - name: mobile-login
+    description: Вход через Google на Android (Credential Manager + id_token)
+  - name: session
+    description: Собственная сессия (JWT) — обновление, профиль, выход
+  - name: jwks
+    description: Публичные ключи для проверки access-токенов другими сервисами
+  - name: admin
+    description: Административные операции (роль admin)
+  - name: devices
+    description: "Self-service «мои устройства»: список своих активных сессий, отзыв одной или всех кроме текущей"
+  - name: telegram
+    description: "Связывание Telegram-бота wallet-telegram с пользователем: одноразовый код и его обмен на device-сессию (src/telegram.cpp)"
+  - name: docs
+    description: "Отдача этой самой спеки и Swagger UI поверх неё (src/docs.cpp) — не часть API, чисто мета"
+
+paths:
+  /docs:
+    get:
+      operationId: docs
+      summary: "Swagger UI поверх /openapi.yaml (эта самая страница)"
+      tags: [docs]
+      security: []
+      responses:
+        "200":
+          description: HTML-страница Swagger UI (вендоренный статический бандл, см. third_party/swagger-ui/README.md)
+          content:
+            text/html: {schema: {type: string}}
+
+  /openapi.yaml:
+    get:
+      operationId: openApiYaml
+      summary: "Эта самая спецификация — файл рядом с исполняемым файлом, отдаётся как есть"
+      tags: [docs]
+      security: []
+      responses:
+        "200":
+          description: Текст этого файла
+          content:
+            application/yaml: {schema: {type: string}}
+
+  /healthz:
+    get:
+      operationId: healthz
+      summary: "Liveness для docker/podman compose healthcheck (см. wallet-infra/compose.yaml)"
+      description: |
+        Проверяет только то, что сам процесс жив и обслуживает HTTP — не
+        Postgres, не Redis (см. src/docs.cpp, почему нарочно не проверяет).
+      tags: [docs]
+      security: []
+      responses:
+        "200":
+          description: Сервис жив
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: {type: string, example: ok}
+
+  /version:
+    get:
+      operationId: version
+      summary: "Версия ЭТОГО билда — проставляется на сборке (см. CMakeLists.txt, VERSION)"
+      description: |
+        `version` — semver из файла `VERSION` рядом с `CMakeLists.txt`;
+        `git_commit` — короткий хэш коммита на момент сборки (`unknown`, если
+        собрано без git — например, вручную без `--build-arg GIT_COMMIT`, см.
+        Containerfile). Та же тройка полей — в `build_info` внутри
+        `GET /metrics` (см. `infra/monitoring`), здесь — для человека и curl
+        без PromQL.
+      tags: [docs]
+      security: []
+      responses:
+        "200":
+          description: Версия и git-хэш текущего билда
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  service: {type: string, example: google-auth}
+                  version: {type: string, example: "0.1.0"}
+                  git_commit: {type: string, example: "a1b2c3d4"}
+
+  /:
+    get:
+      operationId: getIndexPage
+      summary: Статическая HTML-страница со ссылкой на вход через Google
+      tags: [browser-login]
+      security: []
+      responses:
+        "200":
+          description: HTML-страница
+          content:
+            text/html: {schema: {type: string}}
+
+  /auth/google:
+    get:
+      operationId: startGoogleLogin
+      summary: Начало браузерного OAuth2-флоу (Authorization Code + PKCE)
+      description: |
+        Генерирует CSRF `state` и PKCE `code_verifier`/`code_challenge`,
+        сохраняет их в памяти процесса и редиректит на
+        `accounts.google.com/o/oauth2/v2/auth`. `redirect_uri` выбирается по
+        заголовку `X-Forwarded-Host`/`Host` запроса среди заранее
+        зарегистрированных в Google Console значений (см. README, "Redirect
+        URI"), а не строится из произвольного значения заголовка.
+      tags: [browser-login]
+      security: []
+      responses:
+        "302":
+          description: Редирект на страницу входа Google
+          headers:
+            Location: {schema: {type: string, format: uri}}
+
+  /auth/google/callback:
+    get:
+      operationId: googleLoginCallback
+      summary: Обмен authorization code на токены Google, вход или отложенная регистрация
+      description: |
+        См. предупреждение в `info.description` — ошибочные ветки этого
+        эндпоинта отвечают HTML при статусе 200, а не 4xx/5xx.
+      tags: [browser-login]
+      security: []
+      parameters:
+        - name: code
+          in: query
+          required: false
+          schema: {type: string}
+          description: Authorization code от Google; обязателен, если параметр error отсутствует
+        - name: state
+          in: query
+          required: false
+          schema: {type: string}
+          description: CSRF-state, выданный /auth/google; обязателен, если параметр error отсутствует
+        - name: error
+          in: query
+          required: false
+          schema: {type: string}
+          description: Код ошибки, если пользователь отклонил вход на стороне Google
+      responses:
+        "200":
+          description: |
+            HTML — либо страница ошибки (см. предупреждение выше: это же
+            покрывает случаи "code/state отсутствуют", "state неизвестен",
+            "Google отклонил обмен", "id_token не прошёл верификацию"), либо
+            (для НОВОГО google_sub) страница подтверждения регистрации,
+            обслуживаемая формой на `POST /auth/google/confirm-signup`.
+          content:
+            text/html: {schema: {type: string}}
+        "302":
+          description: |
+            Успешный вход существующего пользователя — cookie `session`/
+            `refresh_token` выставлены, редирект на `/` (SPA сама вызовет
+            `GET /auth/me`).
+          headers:
+            Location: {schema: {type: string}}
+            Set-Cookie:
+              schema: {type: string}
+              description: Два заголовка Set-Cookie — session и refresh_token (см. компонент SessionCookies)
+
+  /auth/google/confirm-signup:
+    post:
+      operationId: confirmGoogleSignup
+      summary: Явное подтверждение создания аккаунта после первого входа через Google
+      description: |
+        Единственное место, где реально создаётся новый пользователь —
+        `GET /auth/google/callback` для НЕИЗВЕСТНОГО google_sub не создаёт
+        аккаунт молча, а откладывает уже проверенные Google-claims до этого
+        вызова. См. предупреждение в `info.description` про статус 200 на ошибке.
+      tags: [browser-login]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                token:
+                  type: string
+                  description: Одноразовый токен из HTML-страницы подтверждения (confirm_token)
+              required: [token]
+      responses:
+        "200":
+          description: HTML-страница ошибки — заявка не найдена или уже обработана (см. предупреждение выше)
+          content:
+            text/html: {schema: {type: string}}
+        "302":
+          description: Аккаунт создан, cookie выставлены, редирект на /
+          headers:
+            Location: {schema: {type: string}}
+            Set-Cookie: {schema: {type: string}}
+
+  /auth/nonce:
+    post:
+      operationId: issueMobileNonce
+      summary: Одноразовый nonce для мобильного входа (Android Credential Manager)
+      description: |
+        Android передаёт этот nonce в `GetGoogleIdOption.setNonce(...)` ДО
+        вызова Credential Manager — Google подписывает его внутрь id_token;
+        единственная защита этого флоу от повторного предъявления
+        перехваченного id_token. Хранится только в памяти процесса, без TTL,
+        предъявляется ровно один раз (см. `POST /auth/google/mobile`).
+      tags: [mobile-login]
+      security: []
+      responses:
+        "200":
+          description: Nonce выдан
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  nonce: {type: string, minLength: 32, maxLength: 32}
+                required: [nonce]
+
+  /auth/google/mobile:
+    post:
+      operationId: mobileGoogleLogin
+      summary: Обмен Google id_token (полученного на устройстве) на собственную пару токенов
+      description: |
+        В отличие от браузерного флоу — без редиректа и code exchange:
+        Android уже получил id_token от Google через Play Services. Токены
+        возвращаются в теле ответа, cookie НЕ выставляются (мобильный клиент
+        хранит их сам, см. `org/docs/TODO_mobile_sync.md`, Фаза 3 —
+        EncryptedSharedPreferences). Регистрация нового пользователя — без
+        страницы подтверждения (сам тап "Войти через Google" в приложении
+        уже явное действие).
+      tags: [mobile-login]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                id_token:
+                  type: string
+                  description: id_token от Google (Credential Manager), audience — Web client ID
+                device_id:
+                  type: string
+                  description: Стабильный id установки приложения (не android_id/IMEI) — попадёт в claim access-токена
+                device_name:
+                  type: string
+                  description: Человекочитаемое имя устройства (например, "Pixel 7"), только для показа
+                  default: ""
+                platform:
+                  type: string
+                  enum: [android, ios, web, other]
+                  default: android
+              required: [id_token, device_id]
+      responses:
+        "400":
+          description: Некорректное тело запроса, отсутствует id_token или device_id, либо platform не из android/ios/web/other
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "401":
+          description: id_token не прошёл верификацию (подпись/issuer/audience/exp), либо nonce отсутствует/неизвестен/уже использован
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "200":
+          description: Вход выполнен (или аккаунт создан) — своя пара токенов
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access_token: {type: string, description: "JWT RS256, TTL см. expires_in"}
+                  refresh_token: {type: string, description: "Непрозрачная строка, обменивается через POST /auth/refresh"}
+                  expires_in: {type: integer, description: "TTL access_token в секундах (по умолчанию 900)"}
+                required: [access_token, refresh_token, expires_in]
+
+  /auth/me:
+    get:
+      operationId: getCurrentUser
+      summary: Профиль текущего пользователя
+      description: |
+        Единственный способ для SPA узнать "залогинен ли я" — cookie
+        `session` httpOnly, JS её не читает напрямую.
+      tags: [session]
+      security: [{bearerAuth: [], sessionCookie: []}]
+      responses:
+        "401":
+          description: Токен отсутствует/недействителен/отозван
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "200":
+          description: Профиль пользователя
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: {type: string, description: "google_sub-независимый внутренний id пользователя"}
+                  email: {type: string}
+                  name: {type: string}
+                  picture: {type: string, description: "URL аватарки Google; пустая строка, если её нет"}
+                  role: {type: string, enum: [user, support, admin]}
+                required: [id, email, name, picture, role]
+    delete:
+      operationId: deleteCurrentUser
+      summary: "Удалить аккаунт — самообслуживание (\"Удалить аккаунт\" в настройках)"
+      description: |
+        Жёсткое удаление строки `users` этого пользователя + отзыв ВСЕХ его
+        активных access/refresh-токенов (тот же примитив, что и
+        `POST /admin/users/{id}/logout`, см. `repo::revoke_all_user_tokens`).
+        Cookie сбрасываются, как и при обычном logout.
+
+        Удаляет только ИДЕНТИЧНОСТЬ в этом сервисе — данные пользователя в
+        wallet-api (леджер, счета, операции) этот вызов не трогает вообще:
+        см. `DELETE /api/account` в openapi.yaml wallet-api, вызывается
+        ОТДЕЛЬНО, ДО этого эндпоинта (порядок важен — см. описание там же).
+      tags: [session]
+      security: [{bearerAuth: [], sessionCookie: []}]
+      responses:
+        "401":
+          description: Токен отсутствует/недействителен/отозван
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "204":
+          description: Аккаунт удалён, все сессии отозваны, cookie сброшены
+          headers:
+            Set-Cookie: {schema: {type: string}, description: "Обнуляющие session/refresh_token"}
+
+  /.well-known/jwks.json:
+    get:
+      operationId: getJwks
+      summary: Публичные ключи (JWKS) для проверки access-токенов этого сервиса
+      description: |
+        Читают `wallet-api`/`wallet-gateway` (см. их `util/jwks.hpp`) — сами
+        качают и кэшируют, проверяют подпись локально, без похода в этот
+        сервис на каждый запрос и без общего секрета в конфиге.
+      tags: [jwks]
+      security: []
+      responses:
+        "200":
+          description: Набор публичных ключей (сейчас всегда один — формат готов к ротации по kid)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  keys:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        kty: {type: string, enum: [RSA]}
+                        kid: {type: string}
+                        use: {type: string, enum: [sig]}
+                        alg: {type: string, enum: [RS256]}
+                        n: {type: string, description: "base64url(modulus)"}
+                        e: {type: string, description: "base64url(exponent)"}
+                      required: [kty, kid, use, alg, n, e]
+                required: [keys]
+
+  /auth/refresh:
+    post:
+      operationId: refreshSession
+      summary: Обменять refresh-токен на новую пару access+refresh (с ротацией)
+      description: |
+        Refresh-токен берётся из cookie `refresh_token` (Path=/auth), а если
+        её нет — из JSON-поля `refresh_token` тела запроса (curl/Postman/
+        мобильный клиент без cookie jar). При каждом обмене СТАРЫЙ
+        refresh-токен инвалидируется (Redis GETDEL, атомарно) — повторное
+        предъявление уже потраченного токена получает 401, а не вторую
+        попытку.
+      tags: [session]
+      security: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                refresh_token: {type: string, description: "Нужен, только если токен не пришёл в cookie"}
+      responses:
+        "400":
+          description: refresh_token не передан ни в cookie, ни в теле
+          content:
+            text/plain: {schema: {type: string}}
+        "401":
+          description: refresh-токен недействителен, истёк или уже использован — cookie сброшены
+          headers:
+            Set-Cookie: {schema: {type: string}, description: "Обнуляющие session/refresh_token (Max-Age=0)"}
+          content:
+            text/plain: {schema: {type: string}}
+        "200":
+          description: Новая пара токенов, cookie обновлены
+          headers:
+            Set-Cookie: {schema: {type: string}, description: "Новые session/refresh_token"}
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access_token: {type: string}
+                  expires_in: {type: integer}
+                  refresh_token:
+                    type: string
+                    description: |
+                      Присутствует ТОЛЬКО если исходный refresh_token пришёл
+                      НЕ из cookie (браузер получает новый только через
+                      Set-Cookie, без дублирования в теле).
+                required: [access_token, expires_in]
+
+  /auth/logout:
+    post:
+      operationId: logout
+      summary: Выход — отзыв текущего access/refresh-токена, сброс cookie
+      description: |
+        Best-effort: отсутствие/недействительность токена — не ошибка, cookie
+        сбрасываются в любом случае. Отзывает только токен ИЗ ЭТОГО запроса,
+        не все сессии пользователя (для этого — `POST /admin/users/{id}/logout`).
+      tags: [session]
+      security: [{bearerAuth: [], sessionCookie: []}]
+      responses:
+        "204":
+          description: Cookie сброшены, токены отозваны (если были)
+          headers:
+            Set-Cookie: {schema: {type: string}, description: "Обнуляющие session/refresh_token"}
+
+  /auth/devices:
+    get:
+      operationId: listDevices
+      summary: Список активных сессий (устройств) ТЕКУЩЕГО пользователя
+      description: |
+        Одна запись — одна активная (непросроченная) refresh-сессия. Мобильный
+        вход (device_id непустой) схлопывает повторные входы того же
+        устройства в одну запись уже на выпуске токенов (см. `auth::issue_tokens`)
+        — здесь дублей не бывает. Браузерные сессии (device_id пуст) —
+        отдельная запись на каждый вход. `is_current` — эта самая сессия:
+        точно, если в запросе передан её же refresh-токен (браузер — cookie
+        `refresh_token` Path=/auth; клиент без cookie jar — поле
+        `refresh_token` тела GET-запроса, при его наличии), иначе —
+        эвристикой по device_id из access-токена запроса (мобильный;
+        браузеру недоступна, у него device_id всегда пуст).
+      tags: [devices]
+      security: [{bearerAuth: [], sessionCookie: []}]
+      responses:
+        "401":
+          description: Не авторизован
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "200":
+          description: Список сессий
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  devices:
+                    type: array
+                    items: {$ref: "#/components/schemas/DeviceSession"}
+                required: [devices]
+
+  /auth/devices/revoke:
+    post:
+      operationId: revokeDevice
+      summary: Отозвать одну конкретную сессию (устройство) — не текущую
+      description: |
+        Отзывает refresh-токен сессии И её парный access-токен (мгновенно —
+        но, как и весь мгновенный отзыв в этом сервисе, см.
+        `info.description`, только для проверок ВНУТРИ него: `wallet-api`/
+        `wallet-gateway` проверяют access-токен по JWKS локально, про этот
+        отзыв не узнают, и тот же токен у них "работает" до истечения `exp`,
+        обычно 15 минут).
+
+        "Текущая" (её нельзя отозвать так — см. 400 ниже) определяется
+        ТОЧНО, если в запросе передан свой же refresh-токен (браузер — cookie
+        `refresh_token`, клиент без cookie jar — поле `refresh_token` тела,
+        см. ниже); без него — эвристикой по `device_id` из access-JWT
+        запроса (валидно, потому что схема гарантирует не больше одной
+        активной сессии на устройство, см. README, "Схлопывание по
+        device_id"). Мобильному клиенту рекомендуется передавать
+        `refresh_token` явно — это точнее эвристики.
+      tags: [devices]
+      security: [{bearerAuth: [], sessionCookie: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                token_hash: {type: string, description: "SessionSummary.token_hash из GET /auth/devices"}
+                refresh_token:
+                  type: string
+                  description: |
+                    Свой текущий refresh-токен — нужен только клиенту без
+                    cookie jar (мобильный), чтобы ТОЧНО (не по device_id)
+                    определить "эту" сессию для проверки на 400 ниже.
+                    Браузер обычно не передаёт — своя сессия уже в cookie.
+              required: [token_hash]
+      responses:
+        "401":
+          description: Не авторизован
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "400":
+          description: token_hash отсутствует, либо это и есть текущая сессия (используйте POST /auth/logout)
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "404":
+          description: Такой сессии нет среди активных сессий ЭТОГО пользователя
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "204":
+          description: Сессия отозвана
+
+  /auth/devices/revoke-others:
+    post:
+      operationId: revokeOtherDevices
+      summary: Отозвать все сессии пользователя, кроме текущей
+      description: |
+        Требует, чтобы текущую сессию можно было определить — точно, по
+        своему refresh-токену (браузер — cookie, мобильный — поле
+        `refresh_token` тела ниже), либо эвристикой по `device_id`
+        access-JWT, если токен не передан (см. `/auth/devices/revoke`,
+        "Текущая", то же правило). Ни то ни другое не сработало — 400
+        вместо угадывания, кого не трогать. Как и `/auth/devices/revoke` —
+        отзывает и refresh-, и парный access-токен каждой из остальных
+        сессий.
+      tags: [devices]
+      security: [{bearerAuth: [], sessionCookie: []}]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                refresh_token:
+                  type: string
+                  description: |
+                    Свой текущий refresh-токен — нужен только клиенту без
+                    cookie jar (мобильный), чтобы ТОЧНО (не по device_id)
+                    определить, какую сессию не трогать. Браузер обычно не
+                    передаёт — своя сессия уже в cookie `refresh_token`.
+      responses:
+        "401":
+          description: Не авторизован
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "400":
+          description: Не удалось определить текущую сессию — refresh-токен не передан
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "200":
+          description: Отозвано N сессий
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  revoked: {type: integer}
+                required: [revoked]
+
+  /auth/telegram/link-code:
+    post:
+      operationId: createTelegramLinkCode
+      summary: Одноразовый код связывания Telegram-бота
+      description: |
+        Для экрана «Подключить Telegram» в wallet-web. Код живёт
+        `TELEGRAM_LINK_CODE_TTL_SECS` (по умолчанию 600 с) и сгорает при
+        первом обмене (`POST /internal/telegram/exchange`, его вызывает сам
+        бот, когда пользователь открывает `deep_link` и жмёт Start).
+      tags: [telegram]
+      security: [{bearerAuth: [], sessionCookie: []}]
+      responses:
+        "401":
+          description: Не авторизован
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "503":
+          description: TELEGRAM_BOT_USERNAME не задан — бот не настроен
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "200":
+          description: Код выдан
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: {type: string, description: "base64url, 32 символа — параметр start бота"}
+                  deep_link: {type: string, description: "https://t.me/<bot>?start=<code>"}
+                  expires_in: {type: integer, description: "TTL кода в секундах"}
+                required: [code, deep_link, expires_in]
+
+  /internal/telegram/exchange:
+    post:
+      operationId: exchangeTelegramLinkCode
+      summary: "(служебный) Обмен кода связывания на связку Telegram ↔ пользователь"
+      description: |
+        Вызывает только wallet-telegram по внутренней сети — wallet-gateway
+        `/internal/*` не маршрутизирует. Защищён общим секретом
+        `X-Service-Secret` (= `TELEGRAM_SERVICE_SECRET` обоих сервисов).
+
+        Записывает связку в `telegram_links`; токены бот дальше получает
+        через `POST /internal/telegram/token`. Сессии устройства (refresh)
+        боту не выдаётся (org/docs/TODO_telegram_tokens.md, шаг 6). `device_id`
+        детерминирован от (user_id, tg_user_id). Повторное связывание того же
+        Telegram-аккаунта (в т.ч. с другим пользователем) заменяет связку.
+      tags: [telegram]
+      parameters:
+        - in: header
+          name: X-Service-Secret
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                code: {type: string, description: "Из POST /auth/telegram/link-code"}
+                tg_user_id:
+                  description: "Telegram user id — целое > 0 (числом или строкой из цифр)"
+                  oneOf: [{type: integer, minimum: 1}, {type: string, pattern: "^[1-9][0-9]{0,19}$"}]
+                tg_username: {type: string, description: "Без или с '@' — только для имени устройства"}
+              required: [code, tg_user_id]
+      responses:
+        "400":
+          description: Некорректное тело, нет code или tg_user_id
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "401":
+          description: Неверный X-Service-Secret
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "410":
+          description: Код истёк, уже использован, или его пользователь удалён
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "503":
+          description: TELEGRAM_SERVICE_SECRET не задан — обмен выключен
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "200":
+          description: Связка записана
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user_id: {type: string}
+                  device_id: {type: string, format: uuid}
+                required: [user_id, device_id]
+
+  /internal/telegram/links/{tg_user_id}:
+    delete:
+      operationId: unlinkTelegramFromBot
+      summary: "(служебный) /unlink из бота — удалить связку"
+      description: |
+        `X-Service-Secret`. Веб-ручка `DELETE /auth/telegram/links/{tg_user_id}`
+        требует пользовательский токен, которого у бота нет.
+      tags: [telegram]
+      parameters:
+        - in: header
+          name: X-Service-Secret
+          required: true
+          schema: {type: string}
+        - in: path
+          name: tg_user_id
+          required: true
+          schema: {type: string, pattern: "^[1-9][0-9]{0,19}$"}
+      responses:
+        "400":
+          description: Некорректный tg_user_id
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "401":
+          description: Неверный X-Service-Secret
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "404":
+          description: Связки нет
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "204":
+          description: Отключено
+
+  /internal/telegram/token:
+    post:
+      operationId: issueTelegramBotToken
+      summary: "(служебный) Короткий токен бота для связанного Telegram-пользователя"
+      description: |
+        Вызывает только wallet-telegram, как и `/internal/telegram/exchange`
+        (`X-Service-Secret`, гейтвей `/internal/*` не маршрутизирует).
+        org/docs/TODO_telegram_tokens.md, шаг 4.
+
+        По связке из `telegram_links` (создаётся обменом кода) выпускает
+        access JWT на 5 минут: `aud: [wallet-report, wallet-api]` — без
+        `google-auth`, `scope: "reports:read expense:write"`, `device_id` и
+        `platform: telegram` устройства бота, без `role`. В Redis не
+        кладётся: google-auth такие токены не принимает. Отзыв доступа —
+        удаление связки (`DELETE /auth/telegram/links/{tg_user_id}`).
+      tags: [telegram]
+      parameters:
+        - in: header
+          name: X-Service-Secret
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                tg_user_id:
+                  oneOf: [{type: integer, minimum: 1}, {type: string, pattern: "^[1-9][0-9]{0,19}$"}]
+              required: [tg_user_id]
+      responses:
+        "400":
+          description: Нет или некорректный tg_user_id
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "401":
+          description: Неверный X-Service-Secret
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "404":
+          description: Telegram-аккаунт не связан (или связку удалили из веба)
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "503":
+          description: TELEGRAM_SERVICE_SECRET не задан
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "200":
+          description: Токен выпущен
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access_token: {type: string}
+                  expires_in: {type: integer, example: 300}
+                  user_id: {type: string}
+                  device_id: {type: string, format: uuid}
+                required: [access_token, expires_in, user_id, device_id]
+
+  /auth/telegram/links:
+    get:
+      operationId: listTelegramLinks
+      summary: Связанные с текущим пользователем Telegram-аккаунты
+      tags: [telegram]
+      security: [{bearerAuth: [], sessionCookie: []}]
+      responses:
+        "401":
+          description: Нет сессии
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "200":
+          description: Список связок
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  links:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        tg_user_id: {type: string}
+                        tg_username: {type: string}
+                        name: {type: string, description: "Для показа: «Telegram @username» или «Telegram <id>»"}
+                        created_at: {type: string, format: date-time}
+                required: [links]
+
+  /auth/telegram/links/{tg_user_id}:
+    delete:
+      operationId: deleteTelegramLink
+      summary: Отключить Telegram-бота от кошелька
+      description: |
+        Удаляет связку — бот больше не получит токенов для этого
+        пользователя. Уже выданный токен бота живёт до своего `exp` (≤ 5 мин).
+      tags: [telegram]
+      security: [{bearerAuth: [], sessionCookie: []}]
+      parameters:
+        - in: path
+          name: tg_user_id
+          required: true
+          schema: {type: string, pattern: "^[1-9][0-9]{0,19}$"}
+      responses:
+        "401":
+          description: Нет сессии
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "404":
+          description: Нет такой связки у текущего пользователя
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "204":
+          description: Отключено
+
+  /admin/users:
+    get:
+      operationId: listUsers
+      summary: Список всех пользователей
+      tags: [admin]
+      security: [{bearerAuth: [], sessionCookie: []}]
+      responses:
+        "401":
+          description: Не авторизован
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "403":
+          description: Авторизован, но роль не admin
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "200":
+          description: Список пользователей
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  users:
+                    type: array
+                    items: {$ref: "#/components/schemas/AdminUser"}
+                required: [users]
+
+  /admin/users/{id}/logout:
+    post:
+      operationId: forceLogoutUser
+      summary: Принудительный выход указанного пользователя со всех устройств
+      description: |
+        Отзывает разом ВСЕ активные access- и refresh-токены пользователя
+        (не только токен из текущего запроса) — мгновенно, но опять же
+        только для проверок внутри этого сервиса (см. предупреждение в
+        `info.description`).
+      tags: [admin]
+      security: [{bearerAuth: [], sessionCookie: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+          description: Внутренний id пользователя (см. AdminUser.id)
+      responses:
+        "401":
+          description: Не авторизован
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "403":
+          description: Авторизован, но роль не admin
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "404":
+          description: Пользователь с таким id не найден
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "204":
+          description: Все токены пользователя отозваны
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: "Authorization: Bearer <access_token> — проверяется первым, раньше cookie"
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: session
+      description: "Access-токен тем же JWT, что и bearerAuth — используется, если заголовка Authorization нет"
+  schemas:
+    Error:
+      type: object
+      properties:
+        error: {type: string}
+      required: [error]
+    AdminUser:
+      type: object
+      properties:
+        id: {type: string}
+        email: {type: string}
+        email_verified: {type: boolean}
+        name: {type: string}
+        role: {type: string, enum: [user, support, admin]}
+        created_at: {type: string, description: "Момент первого входа (users.created_at)."}
+        last_login_at: {type: string, description: "Момент последнего входа (users.last_login_at, миграция 000003); пустая строка — колонка появилась позже, чем этот пользователь логинился в последний раз."}
+        active_sessions: {type: integer, description: "Число активных (непросроченных) сессий пользователя прямо сейчас — см. GET /auth/devices, тот же список, просто чужой и count(), не сами сессии."}
+      required: [id, email, email_verified, name, role, created_at, last_login_at, active_sessions]
+    DeviceSession:
+      type: object
+      properties:
+        token_hash:
+          type: string
+          description: "Непрозрачный опаковый id сессии (хэш её refresh-токена) — передавать назад в /auth/devices/revoke, не секрет сам по себе"
+        device_id: {type: string, description: "Пусто у браузерных сессий — см. DeviceInfo"}
+        device_name: {type: string, description: "\"Pixel 7\" (мобильный) или сырой User-Agent (браузер)"}
+        platform: {type: string, description: "\"android\"/\"ios\"/\"web\"/\"telegram\"/\"other\" — пусто у сессий без устройства"}
+        is_current: {type: boolean, description: "Эта самая сессия, из которой пришёл запрос"}
+      required: [token_hash, device_id, device_name, platform, is_current]
