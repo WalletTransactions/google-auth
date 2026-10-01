@@ -1,9 +1,11 @@
 build
+build-loadtest
 out
 logs
 .env
 .env.example
 jwt_signing_key.pem
 Containerfile
-.containerignore
+.dockerignore
 README.md
+.git
