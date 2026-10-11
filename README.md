@@ -676,6 +676,8 @@ curl -X POST http://localhost:8090/auth/google/mobile \
   сервисах шаг 2, отказ токену без `aud` — шаг 3. Урезанный токен
   Telegram-бота (без `google-auth` в `aud`, `scope: "reports:read
   expense:write"`) — шаг 4; до него сессия бота получает тот же полный набор.
+  С 2026-10-11 (`org/docs/TODO_wallet_ai.md`, §2) у обоих токенов в `aud`
+  есть `wallet-ai`, в `scope` — `ai:use` (доступ к LLM-функциям).
 - Старый формат значения в Redis (просто `user_id` строкой, до этого поля)
   `take_refresh_token` по-прежнему понимает — падать на нём не должен,
   просто вернёт устройство пустым.

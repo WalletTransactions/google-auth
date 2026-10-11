@@ -1,6 +1,6 @@
-// Тонкая обёртка над OpenSSL: PKCE (SHA-256), подпись/проверка СВОИХ
-// access-токенов (RSA-SHA256/RS256, см. RsaSigningKey) и проверка id_token
-// Google (тоже RSA-SHA256, см. rsa_sha256_verify).
+// Тонкая обёртка над OpenSSL: SHA-256, случайные байты, подпись access-токенов
+// (RSA-SHA256/RS256, см. RsaSigningKey — нужна только google-auth) и проверка
+// подписи по ключу из JWKS (rsa_sha256_verify — все сервисы).
 #pragma once
 
 #include <cstddef>
@@ -34,11 +34,9 @@ bool constant_time_equal(const std::vector<unsigned char>& a,
 
 // Проверяет подпись RSASSA-PKCS1-v1_5 SHA-256 по сырым модулю/экспоненте
 // RSA-ключа — ровно в том формате, в котором их отдаёт JWKS (base64url,
-// уже декодированный в байты вызывающим кодом). Используется и для id_token
-// Google (ключ оттуда), и wallet-api/wallet-gateway используют такую же
-// функцию (свою копию) для проверки НАШИХ access-токенов. Возвращает false
-// при любой ошибке (битый ключ, неверная подпись и т.п.), исключений не
-// бросает.
+// уже декодированный в байты вызывающим кодом): id_token Google в google-auth,
+// наши access-токены во всех сервисах. Возвращает false при любой ошибке
+// (битый ключ, неверная подпись и т.п.), исключений не бросает.
 bool rsa_sha256_verify(const std::vector<unsigned char>& n,
                         const std::vector<unsigned char>& e,
                         const std::string& signed_data,

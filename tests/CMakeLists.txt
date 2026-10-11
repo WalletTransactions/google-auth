@@ -28,21 +28,22 @@ add_executable(google_auth_tests
     ${CMAKE_SOURCE_DIR}/src/repo.cpp
     ${CMAKE_SOURCE_DIR}/src/db.cpp
     ${CMAKE_SOURCE_DIR}/src/redis_client.cpp
-    ${CMAKE_SOURCE_DIR}/src/util/base64.cpp
-    ${CMAKE_SOURCE_DIR}/src/util/crypto.cpp
-    ${CMAKE_SOURCE_DIR}/src/util/jwt.cpp
-    ${CMAKE_SOURCE_DIR}/src/util/jwt_claims.cpp
-    ${CMAKE_SOURCE_DIR}/src/util/metrics.cpp
-    ${CMAKE_SOURCE_DIR}/src/util/uuid.cpp
+    ${WALLET_COMMON_DIR}/util/base64.cpp
+    ${WALLET_COMMON_DIR}/util/crypto.cpp
+    ${WALLET_COMMON_DIR}/util/jwt.cpp
+    ${WALLET_COMMON_DIR}/util/jwt_claims.cpp
+    ${WALLET_COMMON_DIR}/util/metrics.cpp
+    ${WALLET_COMMON_DIR}/util/uuid.cpp
     ${CMAKE_SOURCE_DIR}/src/util/url.cpp
-    ${CMAKE_SOURCE_DIR}/src/util/dotenv.cpp
-    ${CMAKE_SOURCE_DIR}/src/util/log.cpp
+    ${WALLET_COMMON_DIR}/util/dotenv.cpp
+    ${WALLET_COMMON_DIR}/util/log.cpp
     ${CMAKE_SOURCE_DIR}/src/util/time.cpp
 )
 
 target_include_directories(google_auth_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/third_party
+    ${WALLET_COMMON_DIR}
 )
 
 target_compile_definitions(google_auth_tests PRIVATE

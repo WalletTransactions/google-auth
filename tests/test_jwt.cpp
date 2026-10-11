@@ -90,14 +90,38 @@ TEST(jwt_verify_rejects_malformed_token) {
     CHECK(!jwt::verify_rs256("", key.modulus(), key.exponent()).has_value());
 }
 
-TEST(jwt_verify_does_not_check_expiry_itself) {
-    // verify_rs256() намеренно не смотрит на exp (см. комментарий в
-    // jwt.hpp/jwt.cpp) — эту проверку делает вызывающий код
-    // (auth::authenticate). Здесь фиксируем именно этот контракт.
+TEST(jwt_verify_rejects_expired_and_missing_exp) {
+    // exp обязателен: токен без него был бы бессрочным.
     TempRsaKeyFile key_file;
     crypto::RsaSigningKey key(key_file.path());
-    std::string token = jwt::sign_rs256(json{{"exp", 1}}, key); // истёк ещё в 1970
-    CHECK(jwt::verify_rs256(token, key.modulus(), key.exponent()).has_value());
+    jwt::VerifyError why{};
+
+    std::string expired = jwt::sign_rs256(json{{"exp", 1}}, key); // истёк ещё в 1970
+    CHECK(!jwt::verify_rs256(expired, key.modulus(), key.exponent(), &why).has_value());
+    CHECK(why == jwt::VerifyError::Expired);
+
+    std::string no_exp = jwt::sign_rs256(json{{"sub", "u"}}, key);
+    CHECK(!jwt::verify_rs256(no_exp, key.modulus(), key.exponent(), &why).has_value());
+    CHECK(why == jwt::VerifyError::Expired);
+
+    std::string bad_exp = jwt::sign_rs256(json{{"exp", "tomorrow"}}, key);
+    CHECK(!jwt::verify_rs256(bad_exp, key.modulus(), key.exponent(), &why).has_value());
+    CHECK(why == jwt::VerifyError::Expired);
+}
+
+TEST(jwt_verify_reports_signature_and_format_errors) {
+    TempRsaKeyFile key_a;
+    TempRsaKeyFile key_b;
+    crypto::RsaSigningKey a(key_a.path());
+    crypto::RsaSigningKey b(key_b.path());
+    jwt::VerifyError why{};
+
+    std::string token = jwt::sign_rs256(json{{"exp", 9999999999ULL}}, a);
+    CHECK(!jwt::verify_rs256(token, b.modulus(), b.exponent(), &why).has_value());
+    CHECK(why == jwt::VerifyError::BadSignature);
+
+    CHECK(!jwt::verify_rs256("onlyonepart", a.modulus(), a.exponent(), &why).has_value());
+    CHECK(why == jwt::VerifyError::Malformed);
 }
 
 TEST(jwt_peek_kid_matches_signing_key) {

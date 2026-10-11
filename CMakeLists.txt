@@ -5,6 +5,10 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Общий код сервисов (util/: jwt, jwks, crypto, log, metrics, ...) — копия
+# репозитория wallet-common, обновляется его scripts/vendor.sh; руками не править.
+set(WALLET_COMMON_DIR ${CMAKE_SOURCE_DIR}/third_party/wallet-common)
+
 find_package(OpenSSL REQUIRED)
 find_package(Threads REQUIRED)
 find_package(PostgreSQL REQUIRED)
@@ -67,21 +71,22 @@ add_executable(google_auth
     src/db.cpp
     src/redis_client.cpp
     src/repo.cpp
-    src/util/base64.cpp
-    src/util/crypto.cpp
-    src/util/jwt.cpp
-    src/util/jwt_claims.cpp
-    src/util/uuid.cpp
+    ${WALLET_COMMON_DIR}/util/base64.cpp
+    ${WALLET_COMMON_DIR}/util/crypto.cpp
+    ${WALLET_COMMON_DIR}/util/jwt.cpp
+    ${WALLET_COMMON_DIR}/util/jwt_claims.cpp
+    ${WALLET_COMMON_DIR}/util/uuid.cpp
     src/util/url.cpp
-    src/util/dotenv.cpp
-    src/util/log.cpp
-    src/util/metrics.cpp
+    ${WALLET_COMMON_DIR}/util/dotenv.cpp
+    ${WALLET_COMMON_DIR}/util/log.cpp
+    ${WALLET_COMMON_DIR}/util/metrics.cpp
     src/util/time.cpp
 )
 
 target_include_directories(google_auth PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/third_party
+    ${WALLET_COMMON_DIR}
     ${CMAKE_BINARY_DIR}/generated
 )
 
@@ -197,15 +202,16 @@ option(GOOGLE_AUTH_BUILD_LOADTEST_TOOLS
 if(GOOGLE_AUTH_BUILD_LOADTEST_TOOLS)
     add_executable(mint_loadtest_token
         tools/mint_loadtest_token.cpp
-        src/util/base64.cpp
-        src/util/crypto.cpp
-        src/util/jwt.cpp
+        ${WALLET_COMMON_DIR}/util/base64.cpp
+        ${WALLET_COMMON_DIR}/util/crypto.cpp
+        ${WALLET_COMMON_DIR}/util/jwt.cpp
         src/util/time.cpp
     )
 
     target_include_directories(mint_loadtest_token PRIVATE
         ${CMAKE_SOURCE_DIR}/src
         ${CMAKE_SOURCE_DIR}/third_party
+        ${WALLET_COMMON_DIR}
     )
 
     target_compile_definitions(mint_loadtest_token PRIVATE

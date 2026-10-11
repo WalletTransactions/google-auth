@@ -237,18 +237,12 @@ std::optional<AuthUser> authenticate(const httplib::Request& req, AppState& stat
     if (token.empty()) token = extract_cookie(req, kSessionCookie);
     if (token.empty()) return std::nullopt;
 
+    // Подпись и exp (обязательный) — util/jwt.
     auto payload = jwt::verify_rs256(token, state.jwt_signing_key->modulus(),
                                       state.jwt_signing_key->exponent());
     if (!payload) return std::nullopt;
 
     try {
-        // verify_rs256() намеренно не проверяет exp (общая функция и для
-        // id_token Google — см. её комментарий в jwt.hpp) — делаем это сами,
-        // как и google.cpp для id_token.
-        if (!payload->contains("exp") || payload->at("exp").get<uint64_t>() <= timeutil::now_epoch()) {
-            return std::nullopt;
-        }
-
         // iss/aud/scope (org/docs/TODO_telegram_tokens.md, шаг 2): все ручки
         // google-auth с access-токеном — управление аккаунтом (устройства,
         // связывание Telegram, удаление, /auth/me), отсюда один scope на

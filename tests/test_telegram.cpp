@@ -185,9 +185,10 @@ TEST(telegram_bot_claims) {
     json payload = {{"sub", "u1"}};
     token_claims::add_telegram_bot_claims(payload);
     CHECK_EQ(payload.at("iss").get<std::string>(), std::string("google-auth"));
-    CHECK_EQ(payload.at("scope").get<std::string>(), std::string("reports:read expense:write"));
-    REQUIRE(payload.at("aud").size() == 2u);
+    CHECK_EQ(payload.at("scope").get<std::string>(), std::string("reports:read expense:write ai:use"));
+    REQUIRE(payload.at("aud").size() == 3u);
     CHECK_EQ(payload.at("aud")[0].get<std::string>(), std::string("wallet-report"));
     CHECK_EQ(payload.at("aud")[1].get<std::string>(), std::string("wallet-api"));
+    CHECK_EQ(payload.at("aud")[2].get<std::string>(), std::string("wallet-ai"));
     CHECK_EQ(token_claims::kTelegramBotTokenTtlSecs, 300);
 }

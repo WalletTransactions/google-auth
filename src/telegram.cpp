@@ -229,7 +229,8 @@ void handle_internal_unlink(AppState& state, const httplib::Request& req, httpli
 // user_id, device_id}; 404 — связки нет (не связан или отключён из веба).
 //
 // Токен бота на одну команду (TODO_telegram_tokens.md, шаг 4): aud
-// wallet-report + wallet-api, scope reports:read expense:write, 5 минут. В
+// wallet-report + wallet-api + wallet-ai, scope reports:read expense:write
+// ai:use, 5 минут. В
 // Redis не кладётся — google-auth такие токены не принимает (нет его aud),
 // а отзыв доступа бота — удаление связки: следующий токен уже не выдадут.
 void handle_token(AppState& state, const httplib::Request& req, httplib::Response& res) {

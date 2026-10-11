@@ -1,5 +1,7 @@
 #include "util/jwt.hpp"
 
+#include <chrono>
+
 #include "util/base64.hpp"
 #include "util/crypto.hpp"
 
@@ -19,6 +21,12 @@ std::vector<std::string> split_token(const std::string& token) {
         }
     }
     return parts;
+}
+
+uint64_t now_epoch() {
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::seconds>(
+                                      std::chrono::system_clock::now().time_since_epoch())
+                                      .count());
 }
 
 std::optional<json> parse_json_part(const std::string& b64_part) {
@@ -42,27 +50,37 @@ std::string sign_rs256(const json& payload, const crypto::RsaSigningKey& key) {
     return signing_input + "." + b64::encode(sig);
 }
 
-// Намеренно НЕ проверяет exp (и остальные claims) — эта функция общая для
-// двух разных контекстов (id_token Google в google.cpp и наши собственные
-// access-токены в auth.cpp), а допустимая обработка "просрочен" в них разная
-// (google.cpp хочет отдельное сообщение "id_token истёк", auth.cpp — просто
-// отказ). Проверку exp делает вызывающий код, см. auth::authenticate().
 std::optional<json> verify_rs256(const std::string& token, const std::vector<unsigned char>& n,
-                                  const std::vector<unsigned char>& e) {
+                                  const std::vector<unsigned char>& e, VerifyError* error) {
+    auto fail = [error](VerifyError why) -> std::optional<json> {
+        if (error != nullptr) *error = why;
+        return std::nullopt;
+    };
+
     auto parts = split_token(token);
-    if (parts.size() != 3) return std::nullopt;
+    if (parts.size() != 3) return fail(VerifyError::Malformed);
 
     std::string signing_input = parts[0] + "." + parts[1];
     std::vector<unsigned char> sig;
     try {
         sig = b64::decode(parts[2]);
     } catch (const std::exception&) {
-        return std::nullopt;
+        return fail(VerifyError::Malformed);
     }
 
-    if (!crypto::rsa_sha256_verify(n, e, signing_input, sig)) return std::nullopt;
+    if (!crypto::rsa_sha256_verify(n, e, signing_input, sig)) return fail(VerifyError::BadSignature);
 
-    return parse_json_part(parts[1]);
+    auto payload = parse_json_part(parts[1]);
+    if (!payload || !payload->is_object()) return fail(VerifyError::Malformed);
+
+    try {
+        if (!payload->contains("exp") || payload->at("exp").get<uint64_t>() <= now_epoch()) {
+            return fail(VerifyError::Expired);
+        }
+    } catch (const std::exception&) {
+        return fail(VerifyError::Expired); // exp не число
+    }
+    return payload;
 }
 
 std::optional<std::string> peek_kid(const std::string& token) {

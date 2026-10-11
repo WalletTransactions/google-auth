@@ -10,7 +10,6 @@
 #include "util/crypto.hpp"
 #include "util/jwt.hpp"
 #include "util/log.hpp"
-#include "util/time.hpp"
 #include "util/url.hpp"
 
 using nlohmann::json;
@@ -524,9 +523,11 @@ std::optional<GoogleClaims> verify_id_token(AppState& state, const std::string& 
         return std::nullopt;
     }
 
-    auto payload = jwt::verify_rs256(id_token, n_bytes, e_bytes);
+    jwt::VerifyError verify_error{};
+    auto payload = jwt::verify_rs256(id_token, n_bytes, e_bytes, &verify_error);
     if (!payload) {
-        error_out = "подпись/claims id_token не прошли проверку";
+        error_out = verify_error == jwt::VerifyError::Expired ? "id_token истёк (или в нём нет exp)"
+                                                              : "подпись id_token не прошла проверку";
         return std::nullopt;
     }
 
@@ -539,16 +540,6 @@ std::optional<GoogleClaims> verify_id_token(AppState& state, const std::string& 
         error_out = "неверный audience в id_token";
         return std::nullopt;
     }
-    try {
-        if (!payload->contains("exp") || payload->at("exp").get<uint64_t>() <= timeutil::now_epoch()) {
-            error_out = "id_token истёк";
-            return std::nullopt;
-        }
-    } catch (const std::exception&) {
-        error_out = "некорректное поле exp в id_token";
-        return std::nullopt;
-    }
-
     GoogleClaims claims;
     claims.sub = payload->value("sub", std::string{});
     claims.email = payload->value("email", std::string{});

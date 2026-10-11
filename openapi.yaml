@@ -730,8 +730,8 @@ paths:
         org/docs/TODO_telegram_tokens.md, шаг 4.
 
         По связке из `telegram_links` (создаётся обменом кода) выпускает
-        access JWT на 5 минут: `aud: [wallet-report, wallet-api]` — без
-        `google-auth`, `scope: "reports:read expense:write"`, `device_id` и
+        access JWT на 5 минут: `aud: [wallet-report, wallet-api, wallet-ai]` — без
+        `google-auth`, `scope: "reports:read expense:write ai:use"`, `device_id` и
         `platform: telegram` устройства бота, без `role`. В Redis не
         кладётся: google-auth такие токены не принимает. Отзыв доступа —
         удаление связки (`DELETE /auth/telegram/links/{tg_user_id}`).
