@@ -51,9 +51,10 @@ COPY scripts/ scripts/
 # existing directory". Тот же флаг, что описан в tests/README.md для случая
 # "нет OpenSSL/PostgreSQL под тесты" — здесь причина та же по сути (тестового
 # окружения в этом образе просто нет).
+ARG BUILD_JOBS=3
 RUN cmake -B build -DCMAKE_BUILD_TYPE=Release -DGOOGLE_AUTH_BUILD_TESTS=OFF \
         -DGIT_COMMIT="${GIT_COMMIT}" \
-    && cmake --build build --config Release -j"$(nproc)"
+    && cmake --build build --config Release -j"${BUILD_JOBS}"
 
 FROM debian:bookworm-slim AS runtime
 
