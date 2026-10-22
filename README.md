@@ -672,8 +672,8 @@ curl -X POST http://localhost:8090/auth/google/mobile \
   `aud: ["wallet-api", "wallet-report", "google-auth"]` — сервисы, которые
   сами проверяют токен, `scope: "wallet:read wallet:write account"` — полный
   набор пользователя. Значения — `src/token_claims.hpp`, их же берёт
-  `tools/mint_loadtest_token`. Пока **никто не проверяет** — проверка в
-  сервисах шаг 2, отказ токену без `aud` — шаг 3. Урезанный токен
+  `tools/mint_loadtest_token`. Проверяют все сервисы и гейтвей (шаг 2);
+  токен без `aud` с 2026-10-22 отклоняется везде — 401 (шаг 3). Урезанный токен
   Telegram-бота (без `google-auth` в `aud`, `scope: "reports:read
   expense:write"`) — шаг 4; до него сессия бота получает тот же полный набор.
   С 2026-10-11 (`org/docs/TODO_wallet_ai.md`, §2) у обоих токенов в `aud`

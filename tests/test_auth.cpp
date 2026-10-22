@@ -66,6 +66,12 @@ TEST(auth_authenticate_rejects_token_for_other_audience_or_scope) {
     httplib::Request req_iss;
     req_iss.set_header("Authorization", "Bearer " + make_signed_token(state, evil, exp));
     CHECK(!auth::authenticate(req_iss, state).has_value());
+
+    // Старый токен без aud (шаг 3) — отказ по claims, до Redis.
+    json legacy = {{"sub", "u1"}};
+    httplib::Request req_legacy;
+    req_legacy.set_header("Authorization", "Bearer " + make_signed_token(state, legacy, exp));
+    CHECK(!auth::authenticate(req_legacy, state).has_value());
 }
 
 TEST(auth_authenticate_returns_nullopt_without_any_token) {
