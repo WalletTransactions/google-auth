@@ -466,13 +466,13 @@ paths:
         Одна запись — одна активная (непросроченная) refresh-сессия. Мобильный
         вход (device_id непустой) схлопывает повторные входы того же
         устройства в одну запись уже на выпуске токенов (см. `auth::issue_tokens`)
-        — здесь дублей не бывает. Браузерные сессии (device_id пуст) —
-        отдельная запись на каждый вход. `is_current` — эта самая сессия:
+        — здесь дублей не бывает. Браузерные сессии — отдельная запись на
+        каждый вход (у каждого входа свой device_id). `is_current` — эта самая сессия:
         точно, если в запросе передан её же refresh-токен (браузер — cookie
         `refresh_token` Path=/auth; клиент без cookie jar — поле
         `refresh_token` тела GET-запроса, при его наличии), иначе —
-        эвристикой по device_id из access-токена запроса (мобильный;
-        браузеру недоступна, у него device_id всегда пуст).
+        эвристикой по device_id из access-токена запроса (нужна
+        мобильному; браузеру хватает cookie).
       tags: [devices]
       security: [{bearerAuth: [], sessionCookie: []}]
       responses:
@@ -932,7 +932,7 @@ components:
         token_hash:
           type: string
           description: "Непрозрачный опаковый id сессии (хэш её refresh-токена) — передавать назад в /auth/devices/revoke, не секрет сам по себе"
-        device_id: {type: string, description: "Пусто у браузерных сессий — см. DeviceInfo"}
+        device_id: {type: string, description: "У браузерной сессии — UUID этого входа; пусто у старых браузерных сессий до первого /auth/refresh — см. DeviceInfo"}
         device_name: {type: string, description: "\"Pixel 7\" (мобильный) или сырой User-Agent (браузер)"}
         platform: {type: string, description: "\"android\"/\"ios\"/\"web\"/\"telegram\"/\"other\" — пусто у сессий без устройства"}
         is_current: {type: boolean, description: "Эта самая сессия, из которой пришёл запрос"}

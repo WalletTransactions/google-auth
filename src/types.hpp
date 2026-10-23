@@ -111,9 +111,10 @@ struct PendingSignup {
 // получает id устройства уже ПРОВЕРЕННЫМ подписью, а не из произвольного
 // клиентского заголовка (см. org/docs/TODO_mobile_sync.md, п. 1.2).
 //
-// Все поля опциональны и пусты по умолчанию — браузерный логин не обязан
-// передавать `device_id` (у браузера нет естественного стабильного
-// идентификатора устройства, только сессия).
+// Все поля опциональны и пусты по умолчанию. У браузера нет естественного
+// стабильного идентификатора устройства, поэтому `device_id` ему выдаёт сам
+// сервис — новый UUID на каждый вход (auth::ensure_browser_device_id); это
+// id сессии браузера, а не физического устройства.
 // Допустимые значения DeviceInfo::platform в теле POST /auth/google/mobile
 // — подмножество CHECK device.platform в wallet-api (миграция
 // wallet/000023): иначе клиент с произвольной строкой получил бы валидный
@@ -125,7 +126,7 @@ inline bool is_mobile_login_platform(const std::string& p) {
 }
 
 struct DeviceInfo {
-    std::string device_id;    // генерирует клиент один раз, хранит локально (Android — AppSettings)
+    std::string device_id;    // мобильный — генерирует клиент один раз (Android — AppSettings); браузер — сервис на каждый вход
     std::string device_name;  // "Pixel 7" / сырой User-Agent браузера — только для показа человеку
     std::string platform;     // "android" / "web" / ...
 };

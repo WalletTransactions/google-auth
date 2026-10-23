@@ -71,8 +71,8 @@ struct TokenPair {
 // вызывающий код должен инвалидировать сам (rotate_refresh_token делает это
 // атомарно через GETDEL).
 //
-// device — см. DeviceInfo (types.hpp), по умолчанию пусто (браузерный
-// логин может не передавать). Непустой device.device_id дополнительно
+// device — см. DeviceInfo (types.hpp), по умолчанию пусто. Браузерный
+// вход заполняет его сам (ensure_browser_device_id ниже). Непустой device.device_id дополнительно
 // попадает в сам access-JWT (claim "device_id") — см. issue_access_token в
 // auth.cpp и org/docs/TODO_mobile_sync.md, п. 1.2.
 TokenPair issue_tokens(AppState& state, const UserRecord& user, const DeviceInfo& device = {});
@@ -85,6 +85,13 @@ TokenPair issue_tokens(AppState& state, const UserRecord& user, const DeviceInfo
 // первом рефреше.
 std::optional<TokenPair> rotate_refresh_token(AppState& state,
                                                const std::string& refresh_token_plaintext);
+
+// Браузерной сессии (platform == "web") без device_id выдаёт новый UUID v4;
+// любое другое устройство не трогает. Вызывается при входе через Google
+// (google.cpp::browser_device) и при ротации — так сессии, выпущенные до
+// появления device_id у браузера, получают его на первом же /auth/refresh,
+// без повторного входа.
+void ensure_browser_device_id(DeviceInfo& device);
 
 // Отзывает refresh-токен (logout). Не ошибка, если его и так нет в хранилище.
 void revoke_refresh_token(AppState& state, const std::string& refresh_token_plaintext);

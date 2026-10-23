@@ -68,11 +68,15 @@ void handle_verified_claims(AppState& state, const GoogleClaims& claims, const D
 
 // Браузер не даёт стабильного id устройства (в отличие от мобильного —
 // см. DeviceInfo, types.hpp) — единственное, что тут есть "для показа
-// человеку", это его собственный User-Agent. device_id остаётся пустым.
+// человеку", это его собственный User-Agent. device_id генерируем сами,
+// новый на КАЖДЫЙ вход: без него wallet-api не пускает в /sync/* (веб
+// пишет операции через /sync/push), а "один на браузер" нам взять неоткуда
+// — две вкладки/два браузера одного человека остаются разными сессиями.
 DeviceInfo browser_device(const httplib::Request& req) {
     DeviceInfo device;
     device.platform = "web";
     device.device_name = req.get_header_value("User-Agent");
+    auth::ensure_browser_device_id(device);
     return device;
 }
 

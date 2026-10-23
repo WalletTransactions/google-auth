@@ -13,6 +13,7 @@
 #include "test_framework.hpp"
 #include "util/jwt.hpp"
 #include "util/time.hpp"
+#include "util/uuid.hpp"
 
 using nlohmann::json;
 
@@ -241,4 +242,38 @@ TEST(auth_clear_session_cookies_expires_both_cookies_immediately) {
     CHECK(res.get_header_value("Set-Cookie", "", 0).find("Max-Age=0") != std::string::npos);
     CHECK(res.get_header_value("Set-Cookie", "", 1).find("refresh_token=;") != std::string::npos);
     CHECK(res.get_header_value("Set-Cookie", "", 1).find("Max-Age=0") != std::string::npos);
+}
+
+// ---- ensure_browser_device_id(): ленивая выдача device_id браузеру ----
+// Сам rotate_refresh_token здесь не вызвать (Redis), поэтому проверяется
+// функция, которую он применяет к устройству старой сессии перед issue_tokens.
+
+TEST(auth_ensure_browser_device_id_fills_empty_web_device) {
+    DeviceInfo device;
+    device.platform = "web";
+    auth::ensure_browser_device_id(device);
+    CHECK(uuidgen::looks_valid(device.device_id));
+}
+
+TEST(auth_ensure_browser_device_id_keeps_existing_web_device_id) {
+    DeviceInfo device;
+    device.platform = "web";
+    device.device_id = "11111111-2222-4333-8444-555555555555";
+    auth::ensure_browser_device_id(device);
+    CHECK_EQ(device.device_id, std::string("11111111-2222-4333-8444-555555555555"));
+}
+
+TEST(auth_ensure_browser_device_id_ignores_non_web_platforms) {
+    DeviceInfo device;
+    device.platform = "android";
+    auth::ensure_browser_device_id(device);
+    CHECK(device.device_id.empty());
+}
+
+TEST(auth_ensure_browser_device_id_gives_each_session_its_own_id) {
+    DeviceInfo a, b;
+    a.platform = b.platform = "web";
+    auth::ensure_browser_device_id(a);
+    auth::ensure_browser_device_id(b);
+    CHECK(a.device_id != b.device_id);
 }

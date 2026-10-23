@@ -13,6 +13,7 @@
 #include "util/log.hpp"
 #include "util/metrics.hpp"
 #include "util/time.hpp"
+#include "util/uuid.hpp"
 
 using nlohmann::json;
 
@@ -181,9 +182,10 @@ TokenPair issue_tokens(AppState& state, const UserRecord& user, const DeviceInfo
     // держать инвариант "не больше одной активной сессии на (user, device_id)"
     // здесь, в единственной точке выпуска токенов — тогда список устройств
     // ниже (devices.cpp) вообще не видит дублей, ему нечего группировать.
-    // Браузер (device_id пуст) НЕ участвует — у него нет стабильного
-    // идентификатора устройства, и разные вкладки/браузеры одного человека
-    // обязаны оставаться разными сессиями (см. DeviceInfo, types.hpp).
+    // Браузер схлопыванием фактически не задет: его device_id — новый UUID
+    // на каждый вход (ensure_browser_device_id), совпасть ему не с чем, и
+    // разные вкладки/браузеры одного человека остаются разными сессиями
+    // (см. DeviceInfo, types.hpp).
     if (!device.device_id.empty()) {
         repo::revoke_user_sessions_if(*state.redis, user.id, [&device](const repo::SessionSummary& s) {
             return s.device.device_id == device.device_id;
@@ -198,8 +200,9 @@ TokenPair issue_tokens(AppState& state, const UserRecord& user, const DeviceInfo
     // access_hash считается один раз и кладётся ОБОИМИ записями — refresh
     // несёт его как обратную связку на свой парный access-токен (см.
     // комментарий store_refresh_token в repo.hpp), а не только затем, чтобы
-    // сохранить сам access-токен. Именно эта связка (не device_id — тот
-    // всегда пуст у браузера и не различает несколько его сессий) даёт
+    // сохранить сам access-токен. Именно эта связка (не device_id — у
+    // старых браузерных сессий он ещё пуст, а у мобильного вообще общий для
+    // всех сессий одного устройства до схлопывания) даёт
     // repo::revoke_user_sessions_if погасить ровно ОДИН, а не все
     // access-токены пользователя при отзыве одной сессии (см. её README).
     std::string access_hash = hash_token(pair.access_token);
@@ -225,7 +228,12 @@ std::optional<TokenPair> rotate_refresh_token(AppState& state,
     // Этот путь не идёт через authenticate() (предъявляется refresh-, не
     // access-токен) — user_id не выставился бы сам, делаем явно.
     applog::set_user(owner->user.id);
+    ensure_browser_device_id(owner->device);
     return issue_tokens(state, owner->user, owner->device);
+}
+
+void ensure_browser_device_id(DeviceInfo& device) {
+    if (device.platform == "web" && device.device_id.empty()) device.device_id = uuidgen::v4();
 }
 
 void revoke_refresh_token(AppState& state, const std::string& refresh_token_plaintext) {
