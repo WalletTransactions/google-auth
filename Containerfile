@@ -73,6 +73,10 @@ COPY --from=build /src/build/google_auth /app/google_auth
 # статика, копируется прямо из контекста сборки, без стадии build.
 COPY openapi.yaml /app/openapi.yaml
 COPY third_party/swagger-ui/ /app/vendor/swagger-ui/
+# Миграции своей базы. Накатывает их wallet-infra/infra/env/migrate.sh из
+# ЭТОГО образа (копирует /migrations), а не из рабочей папки: схема всегда
+# той же версии, что и код, который на неё выкатывается.
+COPY migrations/ /migrations/
 
 # LOG_DIR не задан -> util/log.cpp пишет в stdout/stderr на Linux (см. README,
 # раздел "Логирование") — это и есть ожидаемое поведение в контейнере.
