@@ -879,7 +879,7 @@ wallet-report, wallet-gateway, wallet-ai, wallet-telegram) — версия
 
 | Git-тег | Что делает CI (`.github/workflows/release.yml`) | Куда выкатывает Jenkins |
 | --- | --- | --- |
-| `vX.Y.Z-rc.N` | юнит-тесты, сборка, push `ghcr.io/walletransactions/<сервис>:X.Y.Z-rc.N` | test, автоматически за ≤10 минут |
+| `vX.Y.Z-rc.N` | юнит-тесты, сборка, push `ghcr.io/wallettransactions/<сервис>:X.Y.Z-rc.N` | test, автоматически за ≤10 минут |
 | `vX.Y.Z` | **без пересборки**: старший `vX.Y.Z-rc.*` на этом же коммите получает тег `X.Y.Z` (тот же digest) | prod — только если этот digest прошёл smoke в test |
 
 Правила:
