@@ -847,9 +847,9 @@ SQL-параметров, эта строка пишется ВСЕГДА, бе�
 
 ## Версия
 
-Общая схема для всех 4 C++-сервисов проекта (google-auth, wallet-api,
-wallet-report, wallet-gateway) — версия проставляется на билде, не
-хардкодится в исходниках:
+Общая схема для всех C++-сервисов проекта (google-auth, wallet-api,
+wallet-report, wallet-gateway, wallet-ai, wallet-telegram) — версия
+проставляется на билде, не хардкодится в исходниках:
 
 - **Источник** — файл `VERSION` рядом с `CMakeLists.txt` (semver, например
   `0.1.0`), правится руками при релизе. CMake читает его и генерирует
@@ -857,8 +857,9 @@ wallet-report, wallet-gateway) — версия проставляется на 
   коммитится, см. `CMakeLists.txt`, "Версия приложения").
 - **Git-хэш** — ДОПОЛНИТЕЛЬНО к `VERSION`, отличает два билда с одним и тем
   же номером между релизами. При сборке образа (`Containerfile`) своего
-  `.git` в контексте нет — хэш передаётся снаружи через `podman build
-  --build-arg GIT_COMMIT=$(git rev-parse --short HEAD)` (см. `compose.yaml`). При
+  `.git` в контексте нет — хэш передаётся снаружи через `docker build
+  --build-arg GIT_COMMIT=$(git rev-parse --short=8 HEAD)` (так делает CI,
+  `.github/workflows/release.yml`). При
   нативной сборке на рабочей машине (`cmake -B build`) CMake сам спросит
   git. Не нашёл ни то, ни другое — `"unknown"`, сборка не падает.
 - **Видно** тремя способами, везде одна и та же тройка `service`/`version`/
@@ -869,6 +870,35 @@ wallet-report, wallet-gateway) — версия проставляется на 
     /metrics`, тот же приём, что у kube-state-metrics/большинства
     Prometheus-клиентов (не отдельная метрика на поле, один gauge с лейблами)
     — Grafana строит по нему таблицу "какой билд где крутится".
+
+### Релиз: git-тег → образ → контур
+
+Общая для всех 7 сервисов (включая wallet-web). Стек работает в двух
+контурах — test (`:8091`) и prod (`:8090`), см. `wallet-infra/infra/env/README.md`;
+образы для них собирает только CI, на хосте ничего не собирается.
+
+| Git-тег | Что делает CI (`.github/workflows/release.yml`) | Куда выкатывает Jenkins |
+| --- | --- | --- |
+| `vX.Y.Z-rc.N` | юнит-тесты, сборка, push `ghcr.io/walletransactions/<сервис>:X.Y.Z-rc.N` | test, автоматически за ≤10 минут |
+| `vX.Y.Z` | **без пересборки**: старший `vX.Y.Z-rc.*` на этом же коммите получает тег `X.Y.Z` (тот же digest) | prod — только если этот digest прошёл smoke в test |
+
+Правила:
+
+- `X.Y.Z` тега обязан совпадать с `VERSION` — иначе workflow падает. Порядок:
+  поднять `VERSION` коммитом → `vX.Y.Z-rc.1` → проверить в test → при
+  правках новый коммит и `vX.Y.Z-rc.2` → `vX.Y.Z` на коммит последнего rc.
+- `vX.Y.Z` на коммит без rc — workflow падает, образ не публикуется: в prod
+  попадает только то, что было в test.
+- Миграции едут в образе (`/migrations`) и катятся до обновления сервиса;
+  откат сервиса схему не откатывает — миграции пишутся по правилу
+  expand/contract, см. `wallet-infra/infra/db/README.md`.
+- Старые rc-версии в ghcr чистит `.github/workflows/packages-cleanup.yml`
+  (оставляет 10 последних rc, финальные — все).
+
+```bash
+git tag v0.2.0-rc.1 && git push origin v0.2.0-rc.1   # → test
+git tag v0.2.0      && git push origin v0.2.0        # → prod (тот же коммит)
+```
 
 ## Персистентность (Postgres + Redis)
 
