@@ -123,6 +123,9 @@ std::string rewrite_lan_ip_to_nip_io(const std::string& host) {
     std::string::size_type colon = host.find(':');
     std::string ip = colon == std::string::npos ? host : host.substr(0, colon);
     std::string rest = colon == std::string::npos ? std::string() : host.substr(colon);
+    // Только голый IP: "192.168.1.105.nip.io" тоже начинается с "192.168.",
+    // и без этой проверки превращался в "...nip.io.nip.io" и падал в фолбэк.
+    if (ip.find_first_not_of("0123456789.") != std::string::npos) return host;
     return ip + ".nip.io" + rest;
 }
 
