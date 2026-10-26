@@ -1,0 +1,34 @@
+schema: spec-driven
+
+context: |
+  Все артефакты OpenSpec пишутся на русском.
+  google-auth — auth-сервис стека (порт 8080): C++17, cpp-httplib, libpq, свой
+  RESP-клиент Redis. Вход через Google (браузер: Authorization Code + PKCE;
+  Android: id_token из Credential Manager + nonce), своя сессия поверх него:
+  access-JWT RS256 (15 мин) + opaque refresh-токен (30 дней, ротация GETDEL).
+  Пользователи и связки Telegram — в Postgres (схему накатывает мигратор из
+  migrations/, у сервиса нет DDL), access/refresh-токены и коды связывания —
+  в Redis. Другие сервисы проверяют токен сами по GET /.well-known/jwks.json;
+  отзыв токена в Redis действует только внутри google-auth.
+  Снаружи сервис виден через wallet-gateway: /auth/* и /admin/* проксируются,
+  /internal/* — нет (только сеть контура, X-Service-Secret для wallet-telegram).
+  Клиенты: wallet-web (cookie session/refresh_token), android-wallet (Bearer +
+  refresh в теле), wallet-telegram (/internal/telegram/*).
+  Общий код (util/: jwt, jwt_claims, crypto, log, metrics, dotenv, ...) — копия
+  wallet-common в third_party/wallet-common/, правится в wallet-common и
+  копируется scripts/vendor.sh.
+  LAN-only MVP: TLS нет, redirect_uri всегда http; Swagger UI вендорен.
+  Сборка — Docker (Containerfile, BUILD_JOBS=3), по одному C++-сервису за раз.
+
+rules:
+  specs:
+    - Каждое требование — с хотя бы одним сценарием WHEN/THEN
+    - Коды ответа, имена cookie, claim'ы токена и тексты ошибок приводить дословно
+    - Полные схемы тел не дублировать — ссылаться на openapi.yaml
+  design:
+    - Явно указывать, нужна ли правка в другом сервисе (wallet-gateway, wallet-api, wallet-report, wallet-ai, wallet-web, wallet-telegram, android-wallet, wallet-infra) или в wallet-common
+    - Изменение claim'ов, aud или scope токена — перечислить всех потребителей и порядок выкатки
+  tasks:
+    - Каждая задача заканчивается проверкой — юнит-тест (ctest) или curl на живом стеке
+    - Изменение ручки сопровождается правкой openapi.yaml и README.md
+    - Изменение схемы БД — новой миграцией в migrations/, без правки уже накаченных
