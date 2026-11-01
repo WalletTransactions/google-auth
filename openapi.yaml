@@ -45,6 +45,8 @@ tags:
     description: "Self-service «мои устройства»: список своих активных сессий, отзыв одной или всех кроме текущей"
   - name: telegram
     description: "Связывание Telegram-бота wallet-telegram с пользователем: одноразовый код и его обмен на device-сессию (src/telegram.cpp)"
+  - name: mcp
+    description: "Персональные MCP-токены для wallet-mcp: выпуск (веб) и обмен на короткий read-only JWT (src/mcp_tokens.cpp)"
   - name: docs
     description: "Отдача этой самой спеки и Swagger UI поверх неё (src/docs.cpp) — не часть API, чисто мета"
 
@@ -463,7 +465,10 @@ paths:
       operationId: listDevices
       summary: Список активных сессий (устройств) ТЕКУЩЕГО пользователя
       description: |
-        Одна запись — одна активная (непросроченная) refresh-сессия. Мобильный
+        Одна запись — одна активная (непросроченная) refresh-сессия или
+        один действующий MCP-токен (`platform: "mcp"`, `device_name` — имя
+        токена, `is_current` всегда false, см. `POST /auth/mcp-tokens`).
+        Просмотр не тратит refresh-токены и не продлевает MCP-токены. Мобильный
         вход (device_id непустой) схлопывает повторные входы того же
         устройства в одну запись уже на выпуске токенов (см. `auth::issue_tokens`)
         — здесь дублей не бывает. Браузерные сессии — отдельная запись на
@@ -497,6 +502,9 @@ paths:
       operationId: revokeDevice
       summary: Отозвать одну конкретную сессию (устройство) — не текущую
       description: |
+        MCP-сессию отзывает удалением MCP-токена: следующий обмен — 401,
+        уже выданный JWT обмена живёт до своего `exp` (до 300 с).
+
         Отзывает refresh-токен сессии И её парный access-токен (мгновенно —
         но, как и весь мгновенный отзыв в этом сервисе, см.
         `info.description`, только для проверок ВНУТРИ него: `wallet-api`/
@@ -558,7 +566,7 @@ paths:
         "Текущая", то же правило). Ни то ни другое не сработало — 400
         вместо угадывания, кого не трогать. Как и `/auth/devices/revoke` —
         отзывает и refresh-, и парный access-токен каждой из остальных
-        сессий.
+        сессий, а также ВСЕ MCP-токены пользователя (входят в `revoked`).
       tags: [devices]
       security: [{bearerAuth: [], sessionCookie: []}]
       requestBody:
@@ -593,6 +601,98 @@ paths:
                 properties:
                   revoked: {type: integer}
                 required: [revoked]
+
+  /auth/mcp-tokens:
+    post:
+      operationId: issueMcpToken
+      summary: Выпустить персональный MCP-токен (показывается один раз)
+      description: |
+        Для MCP-клиента (LM Studio, Claude Code и др.), который держит в
+        конфиге статичный `Authorization` и не умеет входить через Google.
+        Токен `wmcp_<base64url от 32 случайных байт>` (48 символов) — не JWT;
+        сам по себе доступа ни к чему не даёт, wallet-mcp меняет его на
+        короткий JWT через `POST /internal/mcp/token`. Хранится только
+        SHA-256-хэш, повторно токен не отдаёт ни одна ручка.
+
+        Срок: 30 дней без обмена; каждый успешный обмен продлевает до
+        `min(обмен + 30 дней, выпуск + 90 дней)`, за 90 дней от выпуска —
+        только новый токен. Не больше 10 активных MCP-токенов на
+        пользователя. MCP-токен — сессия устройства: виден в
+        `GET /auth/devices` (`platform: "mcp"`) и отзывается
+        `/auth/devices/revoke`, `revoke-others`, `DELETE /auth/me`,
+        `POST /admin/users/{id}/logout`. На `/auth/refresh` не принимается.
+
+        Аутентификация — как у всех ручек аккаунта (cookie `session` или
+        Bearer с `aud` `google-auth` и scope `account`): токен бота и JWT
+        обмена MCP-токена получают 401.
+      tags: [mcp]
+      security: [{bearerAuth: [], sessionCookie: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: {type: string, description: "Имя для «Моих устройств», например «LM Studio дома». Обрезается по краям, затем 1..64 символа", example: "LM Studio дома"}
+              required: [name]
+      responses:
+        "201":
+          description: Токен выпущен
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/McpTokenIssued"}}
+        "400":
+          description: "Не JSON, нет `name`, пусто после обрезки или длиннее 64 символов — `{\"error\":\"нужно имя токена — от 1 до 64 символов\"}`"
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "401":
+          description: "`{\"error\":\"unauthenticated\"}` — нет токена, или он не адресован google-auth (бот, JWT обмена MCP)"
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "409":
+          description: "Уже 10 активных MCP-токенов — `{\"error\":\"слишком много MCP-токенов — отзовите ненужные в «Моих устройствах» (максимум 10)\"}`"
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+
+  /internal/mcp/token:
+    post:
+      operationId: exchangeMcpToken
+      summary: "(служебный, НЕ проксируется гейтвеем) Обмен MCP-токена на JWT на 300 с"
+      description: |
+        Вызывает wallet-mcp из сети контура; wallet-gateway `/internal/*` не
+        маршрутизирует. Общего секрета нет — доказательство сам MCP-токен
+        (256 бит). Успешный обмен продлевает MCP-токен (см.
+        `POST /auth/mcp-tokens`) и обновляет `last_used_at` сессии.
+
+        JWT: `aud: ["wallet-report"]`, `scope: "reports:read"`,
+        `platform: "mcp"`, без `role`/`email`/`name` — потребитель видит
+        обычного пользователя, админский `as_user_id` в wallet-report через
+        MCP недоступен. Отзыв MCP-токена действует на уже выданный JWT
+        только по его `exp` (до 300 с). Клиенту — кешировать JWT до `exp`.
+
+        Любой отказ — `401 {"error":"invalid_token"}`, причины не
+        различаются: неизвестный, отозванный, истёкший токен, без префикса
+        `wmcp_`, неверной длины, тело не JSON, нет поля `token`,
+        refresh-токен вместо MCP-токена (он при этом не тратится).
+      tags: [mcp]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                token: {type: string, pattern: "^wmcp_[A-Za-z0-9_-]{43}$"}
+              required: [token]
+      responses:
+        "200":
+          description: JWT выпущен
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/McpExchangeResult"}}
+        "401":
+          description: "`{\"error\":\"invalid_token\"}` — для всех причин отказа"
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
 
   /auth/telegram/link-code:
     post:
@@ -931,9 +1031,52 @@ components:
       properties:
         token_hash:
           type: string
-          description: "Непрозрачный опаковый id сессии (хэш её refresh-токена) — передавать назад в /auth/devices/revoke, не секрет сам по себе"
+          description: "Непрозрачный опаковый id сессии (хэш её refresh- или MCP-токена) — передавать назад в /auth/devices/revoke, не секрет сам по себе"
         device_id: {type: string, description: "У браузерной сессии — UUID этого входа; пусто у старых браузерных сессий до первого /auth/refresh — см. DeviceInfo"}
-        device_name: {type: string, description: "\"Pixel 7\" (мобильный) или сырой User-Agent (браузер)"}
-        platform: {type: string, description: "\"android\"/\"ios\"/\"web\"/\"telegram\"/\"other\" — пусто у сессий без устройства"}
-        is_current: {type: boolean, description: "Эта самая сессия, из которой пришёл запрос"}
-      required: [token_hash, device_id, device_name, platform, is_current]
+        device_name: {type: string, description: "\"Pixel 7\" (мобильный), сырой User-Agent (браузер) или имя MCP-токена"}
+        platform: {type: string, description: "\"android\"/\"ios\"/\"web\"/\"telegram\"/\"other\"/\"mcp\" — пусто у сессий без устройства"}
+        is_current: {type: boolean, description: "Эта самая сессия, из которой пришёл запрос. У MCP-сессии всегда false"}
+        last_used_at:
+          type: [string, "null"]
+          format: date-time
+          description: |
+            ISO 8601 UTC. Refresh-сессия — момент выпуска текущего
+            refresh-токена (вход или последний `/auth/refresh`); `null` у
+            сессий, выпущенных до появления поля. MCP-сессия — момент
+            последнего успешного обмена (`/internal/mcp/token`), `null` до
+            первого обмена.
+        expires_at:
+          type: [string, "null"]
+          format: date-time
+          description: |
+            ISO 8601 UTC — срок ключа сессии в Redis. Refresh — срок
+            refresh-токена. MCP — текущий скользящий срок
+            `min(последний обмен + 30 дней, выпуск + 90 дней)`; сам потолок
+            (выпуск + 90 дней) отдельным полем не отдаётся. Просмотр списка
+            срок не продлевает. `null` — неизвестен.
+      required: [token_hash, device_id, device_name, platform, is_current, last_used_at, expires_at]
+    McpTokenIssued:
+      type: object
+      properties:
+        token:
+          type: string
+          pattern: "^wmcp_[A-Za-z0-9_-]{43}$"
+          description: "Сам MCP-токен — показывается ОДИН раз, повторно его не отдаёт ни одна ручка (хранится только SHA-256-хэш)"
+        device_id: {type: string, format: uuid, description: "device_id MCP-сессии (тот же, что в GET /auth/devices и в claim device_id JWT обмена)"}
+        name: {type: string, description: "Имя после обрезки пробелов по краям"}
+        expires_at: {type: string, format: date-time, description: "ISO 8601 UTC, выпуск + 30 дней (скользящий срок; потолок — выпуск + 90 дней)"}
+      required: [token, device_id, name, expires_at]
+    McpExchangeResult:
+      type: object
+      properties:
+        access_token:
+          type: string
+          description: |
+            JWT RS256: `sub`, `iat`, `exp` = `iat` + 300, `iss: google-auth`,
+            `aud: ["wallet-report"]`, `scope: "reports:read"`, `device_id`
+            MCP-сессии, `platform: "mcp"`. Без `role`, `email`, `name`. В
+            Redis не регистрируется: google-auth его не принимает.
+        expires_in: {type: integer, example: 300}
+        user_id: {type: string, format: uuid}
+        device_id: {type: string, format: uuid}
+      required: [access_token, expires_in, user_id, device_id]
