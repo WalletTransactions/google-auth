@@ -66,6 +66,7 @@ add_executable(google_auth
     src/admin.cpp
     src/devices.cpp
     src/telegram.cpp
+    src/mcp_tokens.cpp
     src/pages.cpp
     src/docs.cpp
     src/db.cpp

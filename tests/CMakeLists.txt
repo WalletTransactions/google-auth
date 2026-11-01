@@ -22,9 +22,11 @@ add_executable(google_auth_tests
     test_token_claims.cpp
     test_auth.cpp
     test_telegram.cpp
+    test_mcp_tokens.cpp
 
     ${CMAKE_SOURCE_DIR}/src/auth.cpp
     ${CMAKE_SOURCE_DIR}/src/telegram.cpp
+    ${CMAKE_SOURCE_DIR}/src/mcp_tokens.cpp
     ${CMAKE_SOURCE_DIR}/src/repo.cpp
     ${CMAKE_SOURCE_DIR}/src/db.cpp
     ${CMAKE_SOURCE_DIR}/src/redis_client.cpp

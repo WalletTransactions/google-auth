@@ -38,6 +38,7 @@
 #include "docs.hpp"
 #include "google.hpp"
 #include "httplib.h"
+#include "mcp_tokens.hpp"
 #include "redis_client.hpp"
 #include "telegram.hpp"
 #include "util/crypto.hpp"
@@ -321,6 +322,7 @@ int main() {
     admin::register_routes(svr, state);
     devices::register_routes(svr, state);
     telegram::register_routes(svr, state);
+    mcp_tokens::register_routes(svr, state);
     docsapi::register_routes(svr); // GET /openapi.yaml, /docs, /healthz, статика /vendor/swagger-ui/*
 
     // Access-лог: одна строка на запрос (метод, путь, статус ответа). Ещё на
@@ -377,10 +379,11 @@ int main() {
         // минут жизни даёт привязать ЧУЖОЙ кошелёк к своему чату, токен бота
         // (/internal/telegram/token) — доступ к чужим отчётам, refresh-токены
         // и id_token (/auth/refresh, /auth/logout, /auth/google/mobile) —
-        // вход от имени пользователя.
+        // вход от имени пользователя. Ответ POST /auth/mcp-tokens несёт сам
+        // MCP-токен (90 дней чтения отчётов), обмен — JWT (/internal/*).
         bool secret_body = req.path.rfind("/internal/", 0) == 0 || req.path == "/auth/telegram/link-code" ||
                            req.path == "/auth/refresh" || req.path == "/auth/logout" ||
-                           req.path == "/auth/google/mobile";
+                           req.path == "/auth/google/mobile" || req.path == "/auth/mcp-tokens";
         applog::debug(req.method + " " + req.path,
                       {{"event", "request_body"},
                        {"request_body", secret_body ? std::string("(скрыто: секреты)") : truncate_body(req.body)},
