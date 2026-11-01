@@ -59,4 +59,27 @@ inline void add_telegram_bot_claims(nlohmann::json& payload) {
     payload["scope"] = kScopeTelegramBot;
 }
 
+// JWT обмена персонального MCP-токена (POST /internal/mcp/token, change
+// add-mcp-personal-tokens, D4): только чтение отчётов. Адресован одному
+// wallet-report — ни записи в wallet-api, ни ИИ, ни ручек google-auth.
+// Вызывающий НЕ кладёт в payload role/email/name: без role wallet-report
+// видит обычного пользователя, и админский as_user_id через MCP недоступен.
+inline constexpr const char* kScopeMcp = "reports:read";
+// wallet-mcp кеширует JWT до exp и меняет MCP-токен не чаще раза в 5 минут.
+inline constexpr int kMcpTokenTtlSecs = 300;
+
+inline nlohmann::json mcp_audience() { return nlohmann::json::array({kAudWalletReport}); }
+
+// Дописывает iss/aud/scope и убирает role/email/name, если их кто-то
+// положил по ошибке: регрессия здесь была бы тихой (см.
+// tests/test_token_claims.cpp).
+inline void add_mcp_claims(nlohmann::json& payload) {
+    payload.erase("role");
+    payload.erase("email");
+    payload.erase("name");
+    payload["iss"] = kIssuer;
+    payload["aud"] = mcp_audience();
+    payload["scope"] = kScopeMcp;
+}
+
 } // namespace token_claims
