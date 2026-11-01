@@ -85,6 +85,25 @@ public:
     // висячими ссылками быстрее, чем это допустимо для revoke_all_user_tokens.
     void srem(const std::string& key, const std::string& member);
 
+    // SET key value EXAT epoch_secs — то же, что set_ex, но срок задан
+    // моментом (unix-секунды), а не длительностью. Нужен MCP-токенам (см.
+    // repo::store_mcp_token): их срок — min(сейчас + 30 дней, потолок), и
+    // потолок — абсолютный момент, который удобнее не пересчитывать в TTL.
+    void set_exat(const std::string& key, const std::string& value, uint64_t epoch_secs);
+
+    // SET key value XX EXAT epoch_secs — перезаписывает ТОЛЬКО существующий
+    // ключ. false — ключа не было (nil-ответ на XX): запись не создана. Так
+    // продление MCP-токена (repo::touch_mcp_token) не воскрешает ключ,
+    // удалённый отзывом между чтением и записью.
+    bool set_xx_exat(const std::string& key, const std::string& value, uint64_t epoch_secs);
+
+    // EXPIRETIME key (Redis >= 7.0) — момент истечения ключа, unix-секунды.
+    // nullopt — ключа нет (-2); -1 — ключ есть, но без срока (у наших
+    // ключей так не бывает, значение отдаётся как есть). Абсолютный момент,
+    // а не TTL: срок сессии в GET /auth/devices не «дрожит» на секунду
+    // между двумя просмотрами (now + TTL округлялся бы по-разному).
+    std::optional<int64_t> expiretime(const std::string& key);
+
 private:
     // nullopt — только для null-bulk-ответа ($-1, "ключа нет"), отличать от
     // пустой строки-значения. SET/EXISTS/DEL никогда не возвращают null-bulk
