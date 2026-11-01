@@ -187,8 +187,10 @@ TokenPair issue_tokens(AppState& state, const UserRecord& user, const DeviceInfo
     // разные вкладки/браузеры одного человека остаются разными сессиями
     // (см. DeviceInfo, types.hpp).
     if (!device.device_id.empty()) {
+        // Только refresh-сессии: device_id мобильного входа задаёт клиент, и
+        // совпадение с device_id MCP-токена не должно гасить MCP-токен.
         repo::revoke_user_sessions_if(*state.redis, user.id, [&device](const repo::SessionSummary& s) {
-            return s.device.device_id == device.device_id;
+            return s.kind == repo::SessionKind::Refresh && s.device.device_id == device.device_id;
         });
     }
 

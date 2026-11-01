@@ -6,6 +6,7 @@
 #include "nlohmann/json.hpp"
 #include "repo.hpp"
 #include "util/log.hpp"
+#include "util/time.hpp"
 
 using nlohmann::json;
 
@@ -58,9 +59,16 @@ CurrentSession resolve_current_session(const httplib::Request& req, const auth::
 }
 
 bool is_current(const repo::SessionSummary& session, const CurrentSession& current) {
+    // MCP-сессия текущей не бывает: с MCP-токеном на ручки устройств не
+    // прийти (authenticate требует aud google-auth, у JWT обмена его нет).
+    if (session.kind == repo::SessionKind::Mcp) return false;
     if (!current.known) return false;
     if (!current.device_id.empty()) return session.device.device_id == current.device_id;
     return session.token_hash == current.token_hash;
+}
+
+json epoch_or_null(const std::optional<uint64_t>& epoch) {
+    return epoch ? json(timeutil::iso8601_utc(*epoch)) : json(nullptr);
 }
 
 json session_to_json(const repo::SessionSummary& session, bool current) {
@@ -70,6 +78,8 @@ json session_to_json(const repo::SessionSummary& session, bool current) {
         {"device_name", session.device.device_name},
         {"platform", session.device.platform},
         {"is_current", current},
+        {"last_used_at", epoch_or_null(session.last_used_at)},
+        {"expires_at", epoch_or_null(session.expires_at)},
     };
 }
 

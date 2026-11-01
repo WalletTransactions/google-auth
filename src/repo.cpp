@@ -1,6 +1,9 @@
 #include "repo.hpp"
 
+#include <algorithm>
+
 #include "nlohmann/json.hpp"
+#include "util/time.hpp"
 #include "util/uuid.hpp"
 
 using nlohmann::json;
@@ -161,6 +164,21 @@ std::string user_refresh_index_key(const std::string& user_id) {
 std::string user_access_index_key(const std::string& user_id) {
     return "user_access_tokens:" + user_id;
 }
+// MCP-токены — свой префикс (D1 change add-mcp-personal-tokens): под
+// refresh_token: MCP-токен обменялся бы на полную сессию через /auth/refresh.
+std::string mcp_token_key(const std::string& token_hash) {
+    return "mcp_token:" + token_hash;
+}
+std::string user_mcp_index_key(const std::string& user_id) {
+    return "user_mcp_tokens:" + user_id;
+}
+
+// Срок ключа как момент (EXPIRETIME). nullopt — ключа уже нет или он без срока.
+std::optional<uint64_t> key_expires_at(redis::Client& redis, const std::string& key) {
+    auto at = redis.expiretime(key);
+    if (!at || *at < 0) return std::nullopt;
+    return static_cast<uint64_t>(*at);
+}
 
 // Общий разбор JSON-значения ключа refresh_token:<hash> — тот же формат,
 // что кладёт store_refresh_token, и та же терпимость к дотиконовому/
@@ -170,15 +188,66 @@ std::string user_access_index_key(const std::string& user_id) {
 // вызывающей стороне), поэтому здесь заполняются только device и
 // access_token_hash — отсутствие любого из них молча даёт пустую строку,
 // а не бросает исключение.
-void fill_session_fields(const std::string& raw, DeviceInfo& device, std::string& access_token_hash) {
+void fill_session_fields(const std::string& raw, DeviceInfo& device, std::string& access_token_hash,
+                         std::optional<uint64_t>* issued_at = nullptr) {
     try {
         json value = json::parse(raw);
         device.device_id = value.value("device_id", std::string{});
         device.device_name = value.value("device_name", std::string{});
         device.platform = value.value("platform", std::string{});
         access_token_hash = value.value("access_token_hash", std::string{});
+        // issued_at — с change add-mcp-personal-tokens; у старых записей нет.
+        if (issued_at != nullptr && value.contains("issued_at") && value.at("issued_at").is_number_unsigned()) {
+            *issued_at = value.at("issued_at").get<uint64_t>();
+        }
     } catch (const std::exception&) {
         // старый формат (голый user_id) — устройство и связка неизвестны, не ошибка
+    }
+}
+
+SessionSummary refresh_session(redis::Client& redis, const std::string& hash, const std::string& raw) {
+    SessionSummary session;
+    session.token_hash = hash;
+    session.kind = SessionKind::Refresh;
+    fill_session_fields(raw, session.device, session.access_token_hash, &session.last_used_at);
+    session.expires_at = key_expires_at(redis, refresh_token_key(hash));
+    return session;
+}
+
+SessionSummary mcp_session(redis::Client& redis, const std::string& hash, const McpTokenRecord& record) {
+    SessionSummary session;
+    session.token_hash = hash;
+    session.kind = SessionKind::Mcp;
+    session.device.device_id = record.device_id;
+    session.device.device_name = record.name;
+    session.device.platform = "mcp";
+    if (record.last_used_at > 0) session.last_used_at = record.last_used_at;
+    session.expires_at = key_expires_at(redis, mcp_token_key(hash));
+    return session;
+}
+
+// Обход обоих индексов пользователя: refresh, затем MCP. Висячие хэши
+// (ключ истёк по сроку) вычищаются из индекса попутно.
+void for_each_session(redis::Client& redis, const std::string& user_id,
+                      const std::function<void(const SessionSummary&)>& visit) {
+    std::string refresh_index = user_refresh_index_key(user_id);
+    for (const auto& hash : redis.smembers(refresh_index)) {
+        auto raw = redis.get(refresh_token_key(hash));
+        if (!raw) {
+            redis.srem(refresh_index, hash);
+            continue;
+        }
+        visit(refresh_session(redis, hash, *raw));
+    }
+    std::string mcp_index = user_mcp_index_key(user_id);
+    for (const auto& hash : redis.smembers(mcp_index)) {
+        auto raw = redis.get(mcp_token_key(hash));
+        auto record = raw ? detail::mcp_record_from_json(*raw) : std::nullopt;
+        if (!record) {
+            redis.srem(mcp_index, hash);
+            continue;
+        }
+        visit(mcp_session(redis, hash, *record));
     }
 }
 } // namespace
@@ -196,6 +265,9 @@ void store_refresh_token(redis::Client& redis, const std::string& token_hash,
         {"device_name", device.device_name},
         {"platform", device.platform},
         {"access_token_hash", access_token_hash},
+        // Момент выпуска — last_used_at сессии в GET /auth/devices (вход или
+        // последний /auth/refresh). Старые записи без поля читаются как раньше.
+        {"issued_at", timeutil::now_epoch()},
     };
     redis.set_ex(refresh_token_key(token_hash), value.dump(), ttl_secs);
     // Индекс живёт не дольше самого долгоживущего токена, который в нём
@@ -261,41 +333,30 @@ void revoke_access_token(redis::Client& redis, const std::string& token_hash) {
 }
 
 std::vector<SessionSummary> list_user_sessions(redis::Client& redis, const std::string& user_id) {
-    std::string index_key = user_refresh_index_key(user_id);
+    // Истёкшие по сроку ключи — висячие ссылки в индексах, for_each_session
+    // подчищает их заодно (см. комментарий в repo.hpp).
     std::vector<SessionSummary> out;
-    for (const auto& hash : redis.smembers(index_key)) {
-        auto raw = redis.get(refresh_token_key(hash));
-        if (!raw) {
-            // Ключ истёк по TTL сам — висячая ссылка в индексе, подчищаем
-            // заодно (см. комментарий в repo.hpp).
-            redis.srem(index_key, hash);
-            continue;
-        }
-        SessionSummary session;
-        session.token_hash = hash;
-        fill_session_fields(*raw, session.device, session.access_token_hash);
-        out.push_back(std::move(session));
-    }
+    for_each_session(redis, user_id, [&out](const SessionSummary& s) { out.push_back(s); });
     return out;
 }
 
 int revoke_user_sessions_if(redis::Client& redis, const std::string& user_id,
                              const std::function<bool(const SessionSummary&)>& predicate) {
-    std::string index_key = user_refresh_index_key(user_id);
-    int revoked = 0;
-    for (const auto& hash : redis.smembers(index_key)) {
-        auto raw = redis.get(refresh_token_key(hash));
-        if (!raw) {
-            redis.srem(index_key, hash); // тот же попутный уход за индексом, что и в list_user_sessions
+    // Сначала собираем, потом удаляем — не меняем множество, по которому идём.
+    std::vector<SessionSummary> matched;
+    for_each_session(redis, user_id, [&](const SessionSummary& s) {
+        if (predicate(s)) matched.push_back(s);
+    });
+
+    for (const auto& session : matched) {
+        if (session.kind == SessionKind::Mcp) {
+            // Парного access-токена у MCP-сессии нет: JWT обмена в Redis не
+            // регистрируется и живёт до своего exp (300 с).
+            revoke_mcp_token(redis, user_id, session.token_hash);
             continue;
         }
-        SessionSummary session;
-        session.token_hash = hash;
-        fill_session_fields(*raw, session.device, session.access_token_hash);
-        if (!predicate(session)) continue;
-
-        redis.del(refresh_token_key(hash));
-        redis.srem(index_key, hash);
+        redis.del(refresh_token_key(session.token_hash));
+        redis.srem(user_refresh_index_key(user_id), session.token_hash);
         // Парный access-токен — см. комментарий в repo.hpp: без этого отзыв
         // сессии оставлял бы её access-токен рабочим (в этом сервисе, см.
         // is_access_token_active) до его собственного TTL, хотя refresh уже
@@ -305,14 +366,14 @@ int revoke_user_sessions_if(redis::Client& redis, const std::string& user_id,
             redis.del(access_token_key(session.access_token_hash));
             redis.srem(user_access_index_key(user_id), session.access_token_hash);
         }
-        ++revoked;
     }
-    return revoked;
+    return static_cast<int>(matched.size());
 }
 
 void revoke_all_user_tokens(redis::Client& redis, const std::string& user_id) {
     std::string access_index = user_access_index_key(user_id);
     std::string refresh_index = user_refresh_index_key(user_id);
+    std::string mcp_index = user_mcp_index_key(user_id);
 
     for (const auto& hash : redis.smembers(access_index)) {
         redis.del(access_token_key(hash));
@@ -320,8 +381,86 @@ void revoke_all_user_tokens(redis::Client& redis, const std::string& user_id) {
     for (const auto& hash : redis.smembers(refresh_index)) {
         redis.del(refresh_token_key(hash));
     }
+    for (const auto& hash : redis.smembers(mcp_index)) {
+        redis.del(mcp_token_key(hash));
+    }
     redis.del(access_index);
     redis.del(refresh_index);
+    redis.del(mcp_index);
+}
+
+namespace detail {
+
+std::optional<uint64_t> next_mcp_expiry(uint64_t now, uint64_t cap_at) {
+    if (now >= cap_at) return std::nullopt;
+    return std::min(now + kMcpIdleTtlSecs, cap_at);
+}
+
+std::string mcp_record_to_json(const McpTokenRecord& record) {
+    json value = {
+        {"user_id", record.user_id},
+        {"device_id", record.device_id},
+        {"name", record.name},
+        {"created_at", record.created_at},
+        {"cap_at", record.cap_at},
+        {"last_used_at", record.last_used_at},
+    };
+    return value.dump();
+}
+
+std::optional<McpTokenRecord> mcp_record_from_json(const std::string& raw) {
+    json value = json::parse(raw, nullptr, /*allow_exceptions=*/false);
+    if (!value.is_object()) return std::nullopt;
+    try {
+        McpTokenRecord record;
+        record.user_id = value.value("user_id", std::string{});
+        record.device_id = value.value("device_id", std::string{});
+        record.name = value.value("name", std::string{});
+        record.created_at = value.value("created_at", uint64_t{0});
+        record.cap_at = value.value("cap_at", uint64_t{0});
+        record.last_used_at = value.value("last_used_at", uint64_t{0});
+        if (record.user_id.empty() || record.cap_at == 0) return std::nullopt;
+        return record;
+    } catch (const std::exception&) {
+        return std::nullopt; // поле не того типа — запись не наша
+    }
+}
+
+} // namespace detail
+
+uint64_t store_mcp_token(redis::Client& redis, const std::string& token_hash, const McpTokenRecord& record) {
+    // Сразу после выпуска now < cap_at всегда; value_or — только на случай
+    // вызова с уже прошедшим потолком (тогда ключ просто сразу истечёт).
+    uint64_t expires_at = detail::next_mcp_expiry(record.created_at, record.cap_at).value_or(record.cap_at);
+    redis.set_exat(mcp_token_key(token_hash), detail::mcp_record_to_json(record), expires_at);
+    // Индекс живёт до потолка последнего выпущенного токена — он и самый
+    // долгоживущий из возможных (D2).
+    std::string index_key = user_mcp_index_key(record.user_id);
+    redis.sadd(index_key, token_hash);
+    redis.expire(index_key, detail::kMcpCapSecs);
+    return expires_at;
+}
+
+std::optional<McpTokenRecord> find_mcp_token(redis::Client& redis, const std::string& token_hash) {
+    auto raw = redis.get(mcp_token_key(token_hash));
+    if (!raw) return std::nullopt;
+    return detail::mcp_record_from_json(*raw);
+}
+
+std::optional<uint64_t> touch_mcp_token(redis::Client& redis, const std::string& token_hash,
+                                        McpTokenRecord record, uint64_t now) {
+    auto expires_at = detail::next_mcp_expiry(now, record.cap_at);
+    if (!expires_at) return std::nullopt;
+    record.last_used_at = now;
+    if (!redis.set_xx_exat(mcp_token_key(token_hash), detail::mcp_record_to_json(record), *expires_at)) {
+        return std::nullopt; // отозван между GET и SET — XX не создал ключ заново
+    }
+    return expires_at;
+}
+
+void revoke_mcp_token(redis::Client& redis, const std::string& user_id, const std::string& token_hash) {
+    redis.del(mcp_token_key(token_hash));
+    redis.srem(user_mcp_index_key(user_id), token_hash);
 }
 
 } // namespace repo
