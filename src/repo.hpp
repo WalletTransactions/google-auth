@@ -165,7 +165,8 @@ void revoke_access_token(redis::Client& redis, const std::string& token_hash);
 // "висячая" ссылка — DEL на уже отсутствующий ключ у Redis не ошибка, просто
 // no-op, так что это не баг, а осознанный компромисс ради простоты (индекс
 // не обязан быть идеально синхронизирован, только не терять реальные
-// активные токены).
+// активные токены). MCP-токены (user_mcp_tokens:<id>) удаляются тем же
+// проходом — их гасят и DELETE /auth/me, и админский выход.
 void revoke_all_user_tokens(redis::Client& redis, const std::string& user_id);
 
 // Одна активная (непросроченная) сессия пользователя = один непотраченный
@@ -174,6 +175,11 @@ void revoke_all_user_tokens(redis::Client& redis, const std::string& user_id);
 // отзыв одного конкретного устройства") строится из списка таких сессий, не
 // из access-токенов — у access-токена нет собственного индекса "по
 // устройству" (см. store_access_token выше), и он и так короткоживущий.
+// Вид сессии: refresh-токен (браузер, телефон) или персональный MCP-токен
+// (change add-mcp-personal-tokens, D5) — у них разные ключи в Redis, и отзыв
+// удаляет ключ по виду.
+enum class SessionKind { Refresh, Mcp };
+
 struct SessionSummary {
     std::string token_hash;
     DeviceInfo device;
@@ -182,7 +188,16 @@ struct SessionSummary {
     // формат до появления этого поля (тот же принцип терпимости к старому
     // формату, что и у device). Наружу (devices.cpp/JSON-ответ) не
     // отдаётся — чисто внутренняя связка для revoke_user_sessions_if.
+    // У MCP-сессии всегда пусто: парного access-токена у неё нет.
     std::string access_token_hash;
+    SessionKind kind = SessionKind::Refresh;
+    // Unix-секунды. Refresh: момент выпуска текущего refresh-токена (поле
+    // issued_at значения; у записей до его появления — nullopt). MCP: момент
+    // последнего успешного обмена (до первого — nullopt).
+    std::optional<uint64_t> last_used_at;
+    // Момент истечения ключа в Redis (EXPIRETIME) — единственный источник
+    // правды о сроке для обоих видов, работает и для старых refresh-записей.
+    std::optional<uint64_t> expires_at;
 };
 
 // Все активные сессии пользователя — GET (не GETDEL, см. redis::Client::get):
@@ -191,6 +206,9 @@ struct SessionSummary {
 // истекли по TTL — та же "не абсолютно точный, но самоисправляющийся индекс"
 // логика, что у revoke_all_user_tokens (см. её комментарий), просто чистка
 // происходит здесь, на чтении, а не только там, на удалении.
+// Читает оба индекса: сначала refresh-сессии, затем MCP-сессии
+// (kind = Mcp, platform "mcp", device_name — имя токена). MCP-токены при
+// этом не продлеваются.
 std::vector<SessionSummary> list_user_sessions(redis::Client& redis, const std::string& user_id);
 
 // Отзывает refresh-токены сессий пользователя, для которых predicate(session)
@@ -214,5 +232,53 @@ std::vector<SessionSummary> list_user_sessions(redis::Client& redis, const std::
 // здесь. См. README, "Мгновенный logout — только в auth-сервисе".
 int revoke_user_sessions_if(redis::Client& redis, const std::string& user_id,
                              const std::function<bool(const SessionSummary&)>& predicate);
+
+// Персональные MCP-токены (change add-mcp-personal-tokens, D1/D2). Ключ
+// mcp_token:<hash> — отдельный префикс, чтобы MCP-токен нельзя было
+// предъявить как refresh (POST /auth/refresh ищет только refresh_token:<hash>),
+// а refresh — на обмен MCP. Индекс user_mcp_tokens:<user_id> — SET хэшей, как
+// user_refresh_tokens. Скользящий срок и потолок выражены сроком ключа (EXAT),
+// фоновой чистки нет.
+struct McpTokenRecord {
+    std::string user_id;
+    std::string device_id;
+    std::string name;
+    uint64_t created_at = 0;   // unix-секунды
+    uint64_t cap_at = 0;       // created_at + 90 дней — дальше не продлевается
+    uint64_t last_used_at = 0; // 0 — ещё ни разу не обменивался
+};
+
+namespace detail {
+
+inline constexpr uint64_t kMcpIdleTtlSecs = 60ULL * 60 * 24 * 30; // 30 дней без обмена
+inline constexpr uint64_t kMcpCapSecs = 60ULL * 60 * 24 * 90;     // 90 дней от выпуска
+
+// Новый срок MCP-токена: min(now + 30 дней, cap_at). nullopt — потолок уже
+// достигнут (now >= cap_at): продлевать нечего, токен недействителен.
+// Защитная проверка на случай сдвига часов — сам ключ к этому моменту
+// обычно уже истёк в Redis.
+std::optional<uint64_t> next_mcp_expiry(uint64_t now, uint64_t cap_at);
+
+std::string mcp_record_to_json(const McpTokenRecord& record);
+// nullopt — не JSON или нет user_id: такую запись не принимаем.
+std::optional<McpTokenRecord> mcp_record_from_json(const std::string& raw);
+
+} // namespace detail
+
+// SET mcp_token:<hash> EXAT next_mcp_expiry(created_at, cap_at), SADD в
+// индекс и EXPIRE индекса на 90 дней. Возвращает момент истечения.
+uint64_t store_mcp_token(redis::Client& redis, const std::string& token_hash, const McpTokenRecord& record);
+
+// GET без продления. nullopt — ключа нет (не было, отозван, истёк).
+std::optional<McpTokenRecord> find_mcp_token(redis::Client& redis, const std::string& token_hash);
+
+// Успешный обмен: last_used_at = now, срок — next_mcp_expiry(now, cap_at),
+// SET ... XX EXAT (не воскрешает отозванный между GET и SET ключ). nullopt —
+// потолок достигнут или ключа уже нет; иначе новый момент истечения.
+std::optional<uint64_t> touch_mcp_token(redis::Client& redis, const std::string& token_hash,
+                                        McpTokenRecord record, uint64_t now);
+
+// Удаляет ключ и хэш из индекса пользователя.
+void revoke_mcp_token(redis::Client& redis, const std::string& user_id, const std::string& token_hash);
 
 } // namespace repo

@@ -75,7 +75,9 @@ last_used_at}` (epoch-секунды, `last_used_at` = 0 до первого о�
 решает это даром.
 
 Клиенту Redis добавляются `set_xx_exat(key, value, epoch) -> bool`,
-`set_exat(key, value, epoch)` и `ttl(key) -> optional<int64>`.
+`set_exat(key, value, epoch)` и `expiretime(key) -> optional<int64>`
+(`EXPIRETIME`, Redis ≥ 7.0; при реализации заменил `ttl(key)`: абсолютный
+момент не «дрожит» на секунду между двумя просмотрами, как `now + TTL`).
 
 ### D3. Обмен проверяет, что пользователь существует
 
@@ -103,8 +105,8 @@ last_used_at}` (epoch-секунды, `last_used_at` = 0 до первого о�
 - `repo::SessionSummary` получает `kind` (`refresh` | `mcp`), `last_used_at`
   и `expires_at` (optional).
 - `list_user_sessions` читает оба индекса. Для MCP: `device_name` = `name`,
-  `platform` = `mcp`. `expires_at` = `now + TTL(ключа)` для обоих видов:
-  TTL — единственный источник правды, он работает и для refresh-записей
+  `platform` = `mcp`. `expires_at` = `EXPIRETIME(ключа)` для обоих видов:
+  срок ключа — единственный источник правды, он работает и для refresh-записей
   старого формата. Для refresh `last_used_at` — новое поле `issued_at` в
   значении, у старых записей его нет, и тогда это `null`.
 - `revoke_user_sessions_if` удаляет ключ по `kind`. Парного access у MCP нет.

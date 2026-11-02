@@ -34,6 +34,8 @@ ctest --test-dir build --output-on-failure
 | `test_uuid.cpp` | `util/uuid` — формат UUID v4 (версия/вариант), уникальность, `looks_valid` |
 | `test_dotenv.cpp` | `util/dotenv` — парсинг `KEY=VALUE`, комментарии/пустые строки, кавычки, приоритет реального окружения над `.env` |
 | `test_types.cpp` | `types.hpp` — `Role` ⇄ строка/id, дефолт "user" на неизвестном значении |
+| `test_token_claims.cpp` | `token_claims.hpp` — iss/aud/scope пользовательского токена; JWT обмена MCP-токена: `aud` только `wallet-report`, scope `reports:read`, нет `role`/`email`/`name` |
+| `test_mcp_tokens.cpp` | `mcp_tokens::detail` — обрезка и длина имени (в символах UTF-8), формат `wmcp_` + 43 символа base64url; `repo::detail` — скользящий срок 30 дней, потолок 90 дней (в т.ч. `now ≥ cap_at`), формат записи `mcp_token:` в Redis |
 | `test_auth.cpp` | `auth::authenticate()` — все reject-пути (нет токена, битый/чужой/просроченный токен, токен без `exp`, токен из cookie `session`), `auth::set_session_cookies`/`clear_session_cookies` — состав и атрибуты `Set-Cookie` |
 
 ## Что сознательно НЕ покрыто юнит-тестами (нужны живые Postgres/Redis)

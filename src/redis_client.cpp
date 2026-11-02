@@ -285,4 +285,23 @@ void Client::srem(const std::string& key, const std::string& member) {
     send_command({"SREM", key, member});
 }
 
+void Client::set_exat(const std::string& key, const std::string& value, uint64_t epoch_secs) {
+    send_command({"SET", key, value, "EXAT", std::to_string(epoch_secs)});
+}
+
+bool Client::set_xx_exat(const std::string& key, const std::string& value, uint64_t epoch_secs) {
+    // "+OK" — записано; null bulk ("$-1") — условие XX не выполнено, ключа нет.
+    return send_command({"SET", key, value, "XX", "EXAT", std::to_string(epoch_secs)}).has_value();
+}
+
+std::optional<int64_t> Client::expiretime(const std::string& key) {
+    // EXPIRETIME всегда отвечает integer: -2 — ключа нет, -1 — без срока,
+    // иначе unix-секунды.
+    auto reply = send_command({"EXPIRETIME", key});
+    if (!reply) return std::nullopt;
+    int64_t secs = std::stoll(*reply);
+    if (secs == -2) return std::nullopt;
+    return secs;
+}
+
 } // namespace redis
