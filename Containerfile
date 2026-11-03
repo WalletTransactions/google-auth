@@ -20,6 +20,9 @@ FROM debian:bookworm-slim AS build
 # VERSION при этом всё равно на месте, см. CMakeLists.txt, "Версия
 # приложения").
 ARG GIT_COMMIT=unknown
+# APP_BUILD — тег образа (`0.1.1-rc.2`), его передаёт release.yml; пусто —
+# CMake подставит `<VERSION>-dev` (GET /version, поле build).
+ARG APP_BUILD=
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
@@ -53,7 +56,7 @@ COPY scripts/ scripts/
 # окружения в этом образе просто нет).
 ARG BUILD_JOBS=3
 RUN cmake -B build -DCMAKE_BUILD_TYPE=Release -DGOOGLE_AUTH_BUILD_TESTS=OFF \
-        -DGIT_COMMIT="${GIT_COMMIT}" \
+        -DGIT_COMMIT="${GIT_COMMIT}" -DAPP_BUILD="${APP_BUILD}" \
     && cmake --build build --config Release -j"${BUILD_JOBS}"
 
 FROM debian:bookworm-slim AS runtime

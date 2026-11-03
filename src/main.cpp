@@ -211,7 +211,8 @@ int main() {
 
     // build_info для /metrics (см. util/metrics.cpp) — один раз здесь, до
     // svr.listen() (см. GET /version, docs.cpp — та же тройка полей).
-    metrics::set_build_info(version::kService, version::kVersion, version::kGitCommit);
+    metrics::set_build_info(version::kService, version::kVersion, version::kBuild,
+                            version::kGitCommit);
 
     AppState state;
     state.google_client_id =
@@ -392,7 +393,7 @@ int main() {
         applog::clear_request_context();
     });
 
-    applog::info("google-auth v" + std::string(version::kVersion) + " (" +
+    applog::info("google-auth v" + std::string(version::kBuild) + " (" +
                  std::string(version::kGitCommit) + ") listening on http://" + host + ":" +
                  std::to_string(port) +
                  (log_dir.empty() ? "" : " (логи: " + log_dir + "/)"));
