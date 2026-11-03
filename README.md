@@ -952,14 +952,24 @@ wallet-report, wallet-gateway, wallet-ai, wallet-telegram) — версия
   `.github/workflows/release.yml`). При
   нативной сборке на рабочей машине (`cmake -B build`) CMake сам спросит
   git. Не нашёл ни то, ни другое — `"unknown"`, сборка не падает.
-- **Видно** тремя способами, везде одна и та же тройка `service`/`version`/
-  `git_commit`:
-  - `GET /version` — JSON, без авторизации (как `/healthz`, `/metrics`).
-  - Строка лога при старте (`"... vX.Y.Z (hash) listening on ..."`).
-  - `build_info{service,version,git_commit} 1` — первая строка `GET
-    /metrics`, тот же приём, что у kube-state-metrics/большинства
-    Prometheus-клиентов (не отдельная метрика на поле, один gauge с лейблами)
-    — Grafana строит по нему таблицу "какой билд где крутится".
+- **Сборка (`build`)** — тег образа, `0.1.1-rc.2`. Release передаёт его через
+  `--build-arg APP_BUILD` (Containerfile → `-DAPP_BUILD`), без него CMake
+  ставит `<VERSION>-dev`. Это отдельное поле, а не замена `version`: по
+  `version` smoke выката сверяет `X.Y.Z`. Финальный `X.Y.Z` — тот же образ,
+  поэтому в prod `build` показывает, какой rc промоутнут.
+- **Время запуска (`started_at`)** — момент вызова `metrics::set_build_info`
+  в `main()` (wallet-common), ISO-8601 UTC.
+- **Видно** так, везде одни и те же `service`/`version`/`build`/`git_commit`:
+  - `GET /version` — JSON с ними и `started_at`, без авторизации (как
+    `/healthz`, `/metrics`).
+  - Строка лога при старте (`"... v<build> (hash) listening on ..."`).
+  - `build_info{service,version,build,git_commit} 1` в `GET /metrics`, тот
+    же приём, что у kube-state-metrics/большинства Prometheus-клиентов (не
+    отдельная метрика на поле, один gauge с лейблами) — Grafana строит по
+    нему таблицу "какой билд где крутится". Рядом —
+    `process_start_time_seconds`.
+  - Сводка всех сервисов контура — `GET /api/versions` гейтвея (только
+    роль `admin`) и бейдж версии в углу веба.
 
 ### Релиз: git-тег → образ → контур
 
