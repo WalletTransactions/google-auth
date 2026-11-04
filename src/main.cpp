@@ -12,6 +12,8 @@
 //               Отличие от admin.* — управляет только СВОИМИ сессиями.
 //   telegram.* — связывание Telegram-бота (wallet-telegram) с
 //               пользователем: одноразовый код и его обмен на device-сессию.
+//   token_exchange.* — обмен JWT пользователя на JWT для другого сервиса
+//               (RFC 8693, POST /internal/token/exchange).
 //
 // Кошельки (создание/удаление) сюда больше не входят — CRUD, что раньше
 // временно жил тут же (wallet.*), выделен в отдельный сервис со своей БД,
@@ -41,6 +43,7 @@
 #include "mcp_tokens.hpp"
 #include "redis_client.hpp"
 #include "telegram.hpp"
+#include "token_exchange.hpp"
 #include "util/crypto.hpp"
 #include "util/dotenv.hpp"
 #include "util/log.hpp"
@@ -313,6 +316,23 @@ int main() {
     state.telegram_link_code_ttl_secs =
         env_u64("TELEGRAM_LINK_CODE_TTL_SECS", state.telegram_link_code_ttl_secs);
 
+    // Обмен токена (см. token_exchange.hpp): "wallet-ai=<секрет>,wallet-mcp=<секрет>".
+    // Пусто — эндпоинт отвечает 503. Ошибка формата — ошибка старта: молча
+    // выключенный обмен сломал бы чат без явной причины в журнале.
+    try {
+        state.token_exchange_secrets = token_exchange::detail::parse_secrets(env_or("TOKEN_EXCHANGE_SECRETS", ""));
+    } catch (const std::exception& ex) {
+        applog::error(std::string(ex.what()) + " (см. README.md, «Обмен токена»)");
+        return 1;
+    }
+    if (state.token_exchange_secrets.empty()) {
+        applog::info("token exchange disabled (TOKEN_EXCHANGE_SECRETS пуста)");
+    } else {
+        std::string actors;
+        for (const auto& [name, secret] : state.token_exchange_secrets) actors += (actors.empty() ? "" : ",") + name;
+        applog::info("token exchange enabled for: " + actors);
+    }
+
     std::string host = env_or("HOST", "127.0.0.1");
     int port = std::stoi(env_or("PORT", "8080"));
 
@@ -324,6 +344,7 @@ int main() {
     devices::register_routes(svr, state);
     telegram::register_routes(svr, state);
     mcp_tokens::register_routes(svr, state);
+    token_exchange::register_routes(svr, state);
     docsapi::register_routes(svr); // GET /openapi.yaml, /docs, /healthz, статика /vendor/swagger-ui/*
 
     // Access-лог: одна строка на запрос (метод, путь, статус ответа). Ещё на
@@ -381,7 +402,9 @@ int main() {
         // (/internal/telegram/token) — доступ к чужим отчётам, refresh-токены
         // и id_token (/auth/refresh, /auth/logout, /auth/google/mobile) —
         // вход от имени пользователя. Ответ POST /auth/mcp-tokens несёт сам
-        // MCP-токен (90 дней чтения отчётов), обмен — JWT (/internal/*).
+        // MCP-токен (90 дней чтения отчётов), обмен — JWT (/internal/*;
+        // в т.ч. /internal/token/exchange: subject_token в запросе,
+        // access_token в ответе).
         bool secret_body = req.path.rfind("/internal/", 0) == 0 || req.path == "/auth/telegram/link-code" ||
                            req.path == "/auth/refresh" || req.path == "/auth/logout" ||
                            req.path == "/auth/google/mobile" || req.path == "/auth/mcp-tokens";

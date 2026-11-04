@@ -47,6 +47,8 @@ tags:
     description: "Связывание Telegram-бота wallet-telegram с пользователем: одноразовый код и его обмен на device-сессию (src/telegram.cpp)"
   - name: mcp
     description: "Персональные MCP-токены для wallet-mcp: выпуск (веб) и обмен на короткий read-only JWT (src/mcp_tokens.cpp)"
+  - name: token-exchange
+    description: "Обмен JWT пользователя на JWT для другого сервиса по RFC 8693 — служебный, только сеть контура (src/token_exchange.cpp)"
   - name: docs
     description: "Отдача этой самой спеки и Swagger UI поверх неё (src/docs.cpp) — не часть API, чисто мета"
 
@@ -696,6 +698,110 @@ paths:
           content:
             application/json: {schema: {$ref: "#/components/schemas/Error"}}
 
+  /internal/token/exchange:
+    post:
+      operationId: exchangeToken
+      summary: "(служебный, НЕ проксируется гейтвеем) Обмен JWT пользователя на JWT для другого сервиса (RFC 8693)"
+      description: |
+        Вызывает сервис-actor из сети контура (wallet-ai, wallet-mcp);
+        wallet-gateway `/internal/*` не маршрутизирует. Actor определяется по
+        `X-Service-Secret` — секрету из `TOKEN_EXCHANGE_SECRETS`
+        (`wallet-ai=<секрет>,wallet-mcp=<секрет>`). Пустая переменная —
+        эндпоинт выключен, `503` на любой запрос.
+
+        Политика (жёсткая таблица в коде):
+
+        | actor | subject: `aud` ∋ / `scope` ∋ | `audience` | `scope` выданного |
+        |---|---|---|---|
+        | `wallet-ai` | `wallet-ai` / `ai:use` | `wallet-mcp` | `mcp:read` |
+        | `wallet-mcp` | `wallet-mcp` / `mcp:read` | `wallet-report` | `reports:read` |
+
+        Порядок проверок: секрет (`401 invalid_client`) → `grant_type`
+        (`unsupported_grant_type`) → `subject_token_type` и обязательные поля
+        (`invalid_request`) → подпись ключом google-auth, `iss`, `exp`, `sub`
+        subject-токена (`invalid_grant`, причина не уточняется) → пара
+        actor–`audience` (`invalid_target`) → `aud`/`scope` subject
+        (`invalid_grant`) → `scope` (`invalid_scope`). Ошибки — в форме
+        RFC 6749 §5.2: `{"error":"<код>"}`.
+
+        Выданный JWT RS256: `sub`, `device_id`, `platform` — из subject;
+        `iss: google-auth`; `aud` и `scope` — из таблицы; `iat`;
+        `exp` = min(`exp` subject, `iat` + 300) — обмен не продлевает жизнь
+        токена; `act` = `{"sub":"<actor>"}`, `act` subject вкладывается внутрь
+        (цепочка wallet-ai → wallet-mcp даёт
+        `{"sub":"wallet-mcp","act":{"sub":"wallet-ai"}}`). `role`, `email`,
+        `name` не переносятся. В Redis активных не регистрируется: ручки
+        `/auth/*` его не принимают (к тому же `google-auth` нет в `aud`).
+        Отзыв subject (logout) обмен не проверяет — как и сервисы по JWKS.
+
+        Метрика `token_exchange_total{actor,result}`; журнал — actor, `sub`,
+        `audience`, исход, без токенов и секретов. Тела запроса и ответа в
+        debug-журнал не пишутся.
+      tags: [token-exchange]
+      parameters:
+        - in: header
+          name: X-Service-Secret
+          required: true
+          description: "Секрет actor'а из `TOKEN_EXCHANGE_SECRETS`"
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                grant_type:
+                  type: string
+                  enum: ["urn:ietf:params:oauth:grant-type:token-exchange"]
+                subject_token:
+                  type: string
+                  description: "Access-JWT пользователя, выпущенный google-auth (не `wmcp_…`, не refresh-токен)"
+                subject_token_type:
+                  type: string
+                  enum: ["urn:ietf:params:oauth:token-type:access_token"]
+                audience:
+                  type: string
+                  description: "Имя сервиса-адресата из таблицы политики (не URL; параметр `resource` RFC 8707 не принимается)"
+                  enum: [wallet-mcp, wallet-report]
+                scope:
+                  type: string
+                  description: "Необязателен. Если указан — обязан совпасть со scope из таблицы, иначе `invalid_scope`"
+                  example: "mcp:read"
+              required: [grant_type, subject_token, subject_token_type, audience]
+            example:
+              grant_type: "urn:ietf:params:oauth:grant-type:token-exchange"
+              subject_token: "eyJhbGciOiJSUzI1NiIs..."
+              subject_token_type: "urn:ietf:params:oauth:token-type:access_token"
+              audience: wallet-mcp
+      responses:
+        "200":
+          description: JWT выпущен
+          headers:
+            Cache-Control: {schema: {type: string, example: no-store}}
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/TokenExchangeResult"}}
+        "400":
+          description: |
+            `{"error":"unsupported_grant_type"}` — `grant_type` не token-exchange;
+            `{"error":"invalid_request"}` — не form-тело, неверный
+            `subject_token_type`, нет `subject_token`/`audience`, повтор поля,
+            передан `resource` или `actor_token`;
+            `{"error":"invalid_grant"}` — subject не JWT google-auth, подпись,
+            `iss` или `exp` не те, либо `aud`/`scope` subject не подходят actor'у;
+            `{"error":"invalid_target"}` — `audience` не из строки таблицы для actor'а;
+            `{"error":"invalid_scope"}` — `scope` шире/иной, чем в таблице
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "401":
+          description: "`{\"error\":\"invalid_client\"}` — `X-Service-Secret` пуст или не совпал ни с одним секретом; subject-токен не проверяется"
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "503":
+          description: "`{\"error\":\"unavailable\"}` — `TOKEN_EXCHANGE_SECRETS` пуста, обмен выключен"
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+
   /auth/telegram/link-code:
     post:
       operationId: createTelegramLinkCode
@@ -1082,3 +1188,23 @@ components:
         user_id: {type: string, format: uuid}
         device_id: {type: string, format: uuid}
       required: [access_token, expires_in, user_id, device_id]
+    TokenExchangeResult:
+      type: object
+      description: Ответ RFC 8693 §2.2.1
+      properties:
+        access_token:
+          type: string
+          description: "JWT RS256 для `audience` (claims — см. описание операции). В Redis не регистрируется"
+        issued_token_type:
+          type: string
+          enum: ["urn:ietf:params:oauth:token-type:access_token"]
+        token_type:
+          type: string
+          enum: [Bearer]
+        expires_in:
+          type: integer
+          minimum: 1
+          maximum: 300
+          description: "Секунд до `exp`: не больше 300 и не больше остатка жизни subject-токена"
+          example: 300
+      required: [access_token, issued_token_type, token_type, expires_in]

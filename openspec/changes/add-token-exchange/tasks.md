@@ -1,0 +1,27 @@
+# Tasks
+
+## 1. Claims и политика
+
+- [x] 1.1 Добавить в `src/token_claims.hpp` `kAudWalletMcp`, `kScopeMcpRead` и `add_exchange_claims(payload, aud, scope, actor, subject)`: стирает `role`/`email`/`name`/`act`, пишет `iss`/`aud`/`scope`, вложенный `act`, `exp = min(subject.exp, iat + 300)`. Проверка: новые случаи в `tests/test_token_claims.cpp` (цепочка `act`, срок не длиннее subject, нет `role`) проходят в `ctest` — тесты: `tests/test_token_claims.cpp`: `exchange_constants_not_in_user_set`, `exchange_claims_copy_subject_and_set_target`, `exchange_claims_nest_act_chain`, `exchange_claims_exp_not_longer_than_subject_or_300s`, `exchange_claims_drop_role_email_name`
+- [x] 1.2 Описать таблицу политики (D4) и чистую функцию решения `decide(actor, subject_claims, audience, scope) → {ok | invalid_target | invalid_grant | invalid_scope, target_scope}` в `src/token_exchange.hpp`. Проверка: `tests/test_token_exchange.cpp` покрывает обе строки таблицы, чужой `audience`, subject без нужного `aud`/`scope`, расширение `scope` — тесты: `tests/test_token_exchange.cpp`: `exchange_decide_wallet_ai_to_wallet_mcp`, `exchange_decide_wallet_mcp_to_wallet_report`, `exchange_decide_foreign_audience_is_invalid_target`, `exchange_decide_subject_without_aud_or_scope_is_invalid_grant`, `exchange_decide_scope_cannot_widen` (`decide` — в `token_exchange::detail`, таблица `kPolicy` — в `token_exchange.hpp`)
+
+## 2. Эндпоинт
+
+- [x] 2.1 Разбор `TOKEN_EXCHANGE_SECRETS` (`имя=секрет,…`, пустая — выключено) в `main.cpp` → `AppState`. Проверка: юнит-тест разбора (пустая строка, два сервиса, мусор без `=` — ошибка старта) — тесты: `exchange_parse_secrets_empty_disables`, `exchange_parse_secrets_two_services`, `exchange_parse_secrets_garbage_is_startup_error`, `exchange_identify_actor_by_secret` (разбор — `token_exchange::detail::parse_secrets`, `main.cpp` при ошибке завершается с кодом 1)
+- [x] 2.2 Реализовать `POST /internal/token/exchange` в `src/token_exchange.cpp` с порядком проверок из D4, ответами и кодами по спеке. Тело запроса замаскировать в журнале (как остальные `/internal/*`). Проверка: юнит-тесты разбора form-тела и ответа об ошибке; `curl` на живом стеке: `503` при пустом секрете, `401 invalid_client`, `200` для пары wallet-ai → wallet-mcp — тесты: `exchange_parse_form_decodes_and_rejects_repeats`, `exchange_error_body_is_rfc6749_shape`, `exchange_disabled_returns_503`, `exchange_wrong_secret_is_invalid_client`, `exchange_bad_grant_type_and_token_type`, `exchange_bad_subject_is_invalid_grant`, `exchange_policy_errors_target_and_scope`, `exchange_chain_wallet_ai_then_wallet_mcp`, `exchange_does_not_extend_subject_lifetime`, `exchange_admin_subject_loses_role`, `exchange_over_http_like_wallet_mcp_client` (настоящий HTTP через httplib, форма как у wallet-mcp). `curl` на живом стеке не выполнялся
+- [x] 2.3 Метрика `token_exchange_total{actor,result}` и запись журнала (actor, `sub`, `audience`, `result`, без токенов). Проверка: `GET /metrics` после успешного и неуспешного обмена показывает оба счётчика; в журнале нет `subject_token` — тесты: `exchange_log_has_no_tokens_and_metrics_count_results` (журнал в файл: есть запись `actor`/`sub`/`audience`/`result=ok`, нет `subject_token`, `access_token`, секретов; `render_metrics()` содержит `ok`, `invalid_target`, `invalid_client`). `GET /metrics` на живом стеке не проверялся
+- [ ] 2.4 Проверка «выданный токен не регистрируется»: `GET /auth/me` с выданным JWT. Проверка: `curl` получает `401` `{"error":"unauthenticated"}` — юнит-тестом покрыто: `exchange_issued_token_rejected_by_authenticate` (выданный токен отклоняется `auth::authenticate()` по claims, до Redis); `curl` на живом стеке — не выполнялся
+
+## 3. Документация и конфиг
+
+- [x] 3.1 Описать путь в `openapi.yaml` (form-тело, ответ `200`, ошибки `400`/`401`/`503`). Проверка: `/docs` показывает операцию, пример запроса из Swagger UI на test-контуре выполняется — `openapi.yaml`: `exchangeToken`, тег `token-exchange`, схема `TokenExchangeResult` (валидность YAML проверена разбором). Swagger UI на test-контуре не проверялся
+- [x] 3.2 Раздел «Обмен токена (`/internal/token/exchange`)» в `README.md`: политика, `act`, срок, `TOKEN_EXCHANGE_SECRETS`, пример `curl`. Добавить переменную в `.env.example`. Проверка: пример `curl` из README отрабатывает на test-контуре — README: раздел «Обмен токена (`/internal/token/exchange`)», строка в «Структура»; `.env.example`: `TOKEN_EXCHANGE_SECRETS`. Пример `curl` на test-контуре не выполнялся
+
+## 4. Сквозная проверка
+
+- [ ] 4.1 На test-контуре: получить токен бота (`/internal/telegram/token`), обменять от имени wallet-ai на `wallet-mcp`, затем выданный — от имени wallet-mcp на `wallet-report`, и вызвать `GET /api/reports/accounts`. Проверка: отчёт возвращается, у итогового JWT `act` = `{"sub":"wallet-mcp","act":{"sub":"wallet-ai"}}`, `role` нет
+
+## Workflow follow-up
+
+- Задать `TOKEN_EXCHANGE_SECRETS` в wallet-infra для test и prod до выката wallet-mcp `add-jwt-access`.
+- Архивировать после выката и сквозной проверки (4.1).
