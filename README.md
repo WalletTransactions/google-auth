@@ -187,6 +187,7 @@ build\Release\google_auth.exe    # Windows (из корня проекта)
 - `auth.hpp/.cpp` — своя сессия поверх этой аутентификации: заводит/находит внутреннего пользователя (`UserRecord`, `id` — свой UUID, не зависящий от формата Google-ID) и выпускает пару токенов — короткий access-JWT (RS256, по умолчанию 15 минут, cookie `session`, его хэш дополнительно кладётся в Redis с тем же TTL) и долгий opaque refresh-токен (по умолчанию 30 дней, хранится в Redis только как SHA-256-хэш, cookie `refresh_token` с `Path=/auth`). `auth::authenticate()` — то, чем остальные модули (и другие сервисы — wallet-api, wallet-bff, wallet-gateway) проверяют авторизацию запроса по access-токену; здесь, в самом google-auth, `authenticate()` вдобавок к подписи/`exp` проверяет присутствие токена в Redis (см. «Персистентность» ниже) — другие сервисы не трогают Google и не спрашивают auth-сервис на каждый запрос вообще, они сами качают публичный ключ с `GET /.well-known/jwks.json` (см. ниже) и проверяют подпись локально, без Redis. Сюда же — `POST /auth/refresh` (обменять refresh на новую пару, со сквозной ротацией через атомарный Redis `GETDEL` — старый сразу инвалидируется) и `POST /auth/logout` (отозвать и refresh-, и access-токен в Redis, очистить cookie).
 - `admin.hpp/.cpp` — `GET /admin/users` (JSON-список всех пользователей — SPA сама рисует таблицу, см. `../wallet-web/site/app.js::renderAdmin()`) и `POST /admin/users/:id/logout` (принудительный отзыв всех токенов пользователя в Redis, см. «Принудительный logout» ниже) — оба только `Role::Admin`.
 - `pages.hpp/.cpp` — HTML для браузерного флоу.
+- `token_exchange.hpp/.cpp` — `POST /internal/token/exchange`: обмен JWT пользователя на короткий JWT для другого сервиса по RFC 8693 (таблица политики, actor по `X-Service-Secret`), см. «Обмен токена» ниже.
 - `db.hpp/.cpp` — тонкая обёртка над `libpq` (одно соединение + мьютекс, см. комментарий в файле) + `verify_schema()` — проверяет, что схема уже накачена (создаёт её отдельная роль-мигратор, не этот сервис, см. «Персистентность» ниже). Теперь только под `users` — `refresh_tokens` здесь больше нет.
 - `redis_client.hpp/.cpp` — тонкая обёртка над RESP поверх голых сокетов (одно соединение + мьютекс, тот же приём, что и `db.hpp`) — `SET..EX`/`EXISTS`/`DEL`/`GETDEL`, без внешней библиотеки.
 - `repo.hpp/.cpp` — типизированный слой над SQL и над Redis: `auth.cpp`/`admin.cpp` работают с `UserRecord`, а не с сырыми запросами. И refresh-токены (`store/take/revoke_refresh_token`), и access-токены (`store/is_active/revoke_access_token`) — оба в Redis, спрятаны за узкими функциями — если бэкенд у любых из них сменится, меняется только этот файл.
@@ -611,6 +612,85 @@ Google, ни ротировать refresh, а 15-минутный access-JWT в 
 `mcp_token_exchanges_total{result="ok|invalid"}`. Журнал:
 `mcp_token_issued`, `mcp_token_exchanged` (`user_id`, `device_id`),
 `mcp_token_rejected`.
+
+### Обмен токена (`/internal/token/exchange`)
+
+Сервис-actor меняет JWT пользователя на короткий JWT для следующего сервиса
+по RFC 8693 (change `add-token-exchange`, реализовано в `token_exchange.cpp`).
+Так wallet-ai зовёт wallet-mcp, а wallet-mcp — wallet-report, не пробрасывая
+полученный токен дальше и не расширяя права пользователя. Гейтвеем не
+проксируется (`/internal/*`).
+
+**Actor и `TOKEN_EXCHANGE_SECRETS`.** Вызывающий сервис предъявляет
+`X-Service-Secret`; секреты задаются переменной
+`TOKEN_EXCHANGE_SECRETS=wallet-ai=<секрет>,wallet-mcp=<секрет>` — у каждого
+сервиса свой, совпавший становится actor'ом. Сравнение — за постоянное время
+(`telegram::detail::secret_matches`). Пустая переменная — эндпоинт выключен,
+`503 {"error":"unavailable"}` на любой запрос. Ошибка формата (элемент без
+`=`, пустое имя/секрет, имя не из таблицы ниже, повтор имени, одинаковый
+секрет у двух сервисов) — ошибка старта. Те же значения — в
+`AUTH_EXCHANGE_SECRET` у wallet-ai и wallet-mcp (задаются в wallet-infra).
+
+**Политика** — жёсткая таблица `token_exchange::kPolicy` (не в env: изменение
+политики проходит ревью и тесты):
+
+| actor | subject: `aud` ∋ / `scope` ∋ | `audience` | `scope` выданного |
+| --- | --- | --- | --- |
+| `wallet-ai` | `wallet-ai` / `ai:use` | `wallet-mcp` | `mcp:read` |
+| `wallet-mcp` | `wallet-mcp` / `mcp:read` | `wallet-report` | `reports:read` |
+
+`audience` — имя сервиса, не URL; `resource` (RFC 8707) не принимается.
+`scope` необязателен; если указан, обязан совпасть со scope таблицы.
+
+**Выданный JWT** (`token_claims::add_exchange_claims`):
+
+| claim | значение |
+| --- | --- |
+| `sub`, `device_id`, `platform` | из subject-токена |
+| `iss` | `google-auth` |
+| `aud`, `scope` | из таблицы, `aud` — массив из одного адресата |
+| `iat`, `exp` | `exp` = min(`exp` subject, `iat` + 300) |
+| `act` | `{"sub":"<actor>"}`; `act` subject вкладывается внутрь |
+
+Цепочка токен бота → (wallet-ai) → wallet-mcp → (wallet-mcp) → wallet-report
+даёт итоговый `act` = `{"sub":"wallet-mcp","act":{"sub":"wallet-ai"}}`.
+**`role`, `email`, `name` не переносятся** — wallet-report не увидит
+администратора. Обмен не продлевает жизнь токена: по кругу пользователя не
+удержать. В Redis активных выданный токен не регистрируется, ручки `/auth/*`
+его не принимают (`401 unauthenticated`; к тому же `google-auth` нет в
+`aud`), logout его не отзывает — он живёт не дольше 300 с. Отзыв subject
+(logout) обмен не проверяет — так же, как wallet-report и wallet-api по JWKS.
+
+**Ответы.** `200 {"access_token", "issued_token_type":
+"urn:ietf:params:oauth:token-type:access_token", "token_type": "Bearer",
+"expires_in"}` с `Cache-Control: no-store`. Ошибки — `{"error":"<код>"}` по
+RFC 6749 §5.2, в порядке проверок: неверный/пустой секрет — `401
+invalid_client` (subject не смотрится); `grant_type` не token-exchange —
+`400 unsupported_grant_type`; неверный `subject_token_type`, нет
+`subject_token`/`audience`, повтор поля, не form-тело — `400
+invalid_request`; subject не JWT google-auth, не та подпись, `iss`, истёк —
+`400 invalid_grant` без уточнения; `audience` не из строки actor'а — `400
+invalid_target`; `aud`/`scope` subject не подходят — `400 invalid_grant`;
+`scope` иной — `400 invalid_scope`. Схема — `openapi.yaml`.
+
+```bash
+# от имени wallet-ai: JWT пользователя (aud ∋ wallet-ai, scope ∋ ai:use) -> JWT для wallet-mcp
+curl -s -X POST http://localhost:8080/internal/token/exchange \
+  -H "X-Service-Secret: $WALLET_AI_EXCHANGE_SECRET" \
+  --data-urlencode "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+  --data-urlencode "subject_token=$USER_JWT" \
+  --data-urlencode "subject_token_type=urn:ietf:params:oauth:token-type:access_token" \
+  --data-urlencode "audience=wallet-mcp"
+# -> {"access_token":"...","expires_in":300,"issued_token_type":"urn:ietf:params:oauth:token-type:access_token","token_type":"Bearer"}
+```
+
+Метрика `token_exchange_total{actor,result}` (`result`: `ok`,
+`invalid_client`, `invalid_grant`, `invalid_target`, `invalid_scope`,
+`invalid_request`, `unavailable`; `unsupported_grant_type` считается как
+`invalid_request`, `actor="none"` — когда actor не определён). Журнал —
+событие `token_exchange` с `actor`, `sub`, `audience`, `result` (и `error`,
+если код ответа отличается от `result`), без токенов и секретов; тела
+запроса и ответа в debug-журнал не пишутся (`secret_body` в `main.cpp`).
 
 ### Telegram-бот (`POST /auth/telegram/link-code`, `/internal/telegram/exchange`)
 

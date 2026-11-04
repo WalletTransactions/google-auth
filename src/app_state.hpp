@@ -17,6 +17,8 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
+#include <vector>
 
 #include "db.hpp"
 #include "redis_client.hpp"
@@ -135,4 +137,9 @@ struct AppState {
     std::string telegram_bot_username;
     std::string telegram_service_secret;
     uint64_t telegram_link_code_ttl_secs = 60 * 10; // 10 минут
+
+    // Обмен токена (POST /internal/token/exchange, token_exchange.hpp):
+    // пары (actor, секрет) из TOKEN_EXCHANGE_SECRETS. Пусто — эндпоинт
+    // выключен (503), а не открыт всем.
+    std::vector<std::pair<std::string, std::string>> token_exchange_secrets;
 };
