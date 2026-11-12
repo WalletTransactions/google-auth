@@ -29,15 +29,20 @@ inline constexpr const char* kAudWalletAi = "wallet-ai";
 // веб-сессия не ходит в wallet-mcp напрямую, токен для него выдаёт только
 // обмен (POST /internal/token/exchange, token_exchange.hpp).
 inline constexpr const char* kAudWalletMcp = "wallet-mcp";
+// Справка по OpenSpec-спекам (change docs-audience): необязательный сервис,
+// адресат выдаётся всегда — без апстрима гейтвей отвечает 404 до проверки
+// токена. Область документации wallet-docs выбирает сам по role/platform.
+// Только пользовательский токен: боту и обмену справка не нужна.
+inline constexpr const char* kAudWalletDocs = "wallet-docs";
 
 // Полный набор пользователя (браузер, телефон). Явный, а не «нет scope —
 // можно всё»: одна ошибка при выпуске урезанного токена (бот) иначе дала бы
 // ему полный доступ. ai:use — доступ к wallet-ai; выключить ИИ кому-то —
-// не выдавать этот scope.
-inline constexpr const char* kScopeUser = "wallet:read wallet:write reports:read account ai:use";
+// не выдавать этот scope. docs:ask — вопросы к wallet-docs.
+inline constexpr const char* kScopeUser = "wallet:read wallet:write reports:read account ai:use docs:ask";
 
 inline nlohmann::json user_audience() {
-    return nlohmann::json::array({kAudWalletApi, kAudWalletReport, kAudGoogleAuth, kAudWalletAi});
+    return nlohmann::json::array({kAudWalletApi, kAudWalletReport, kAudGoogleAuth, kAudWalletAi, kAudWalletDocs});
 }
 
 // Дописывает iss/aud/scope пользовательского токена в payload.

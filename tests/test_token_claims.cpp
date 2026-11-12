@@ -2,6 +2,8 @@
 // (org/docs/TODO_telegram_tokens.md, шаг 1).
 #include "token_claims.hpp"
 
+#include <tuple>
+
 #include "test_framework.hpp"
 
 using nlohmann::json;
@@ -12,15 +14,56 @@ TEST(user_claims_have_issuer_audience_and_scope) {
 
     CHECK_EQ(payload.at("iss").get<std::string>(), std::string("google-auth"));
     CHECK_EQ(payload.at("scope").get<std::string>(),
-             std::string("wallet:read wallet:write reports:read account ai:use"));
+             std::string("wallet:read wallet:write reports:read account ai:use docs:ask"));
     REQUIRE(payload.at("aud").is_array());
-    CHECK_EQ(payload.at("aud").size(), 4u);
+    CHECK_EQ(payload.at("aud").size(), 5u);
     CHECK_EQ(payload.at("aud")[0].get<std::string>(), std::string("wallet-api"));
     CHECK_EQ(payload.at("aud")[1].get<std::string>(), std::string("wallet-report"));
     CHECK_EQ(payload.at("aud")[2].get<std::string>(), std::string("google-auth"));
     CHECK_EQ(payload.at("aud")[3].get<std::string>(), std::string("wallet-ai"));
+    CHECK_EQ(payload.at("aud")[4].get<std::string>(), std::string("wallet-docs"));
     // Остальные claims не трогает.
     CHECK_EQ(payload.at("sub").get<std::string>(), std::string("u1"));
+}
+
+// change docs-audience: wallet-docs/docs:ask — только у пользовательского
+// токена. Бот, MCP-токен и обмен их не получают, даже если subject обмена —
+// пользовательский токен, где они есть.
+static bool aud_has(const json& payload, const char* aud) {
+    for (const auto& a : payload.at("aud"))
+        if (a.get<std::string>() == aud) return true;
+    return false;
+}
+static bool scope_has(const json& payload, const std::string& scope) {
+    std::string s = " " + payload.at("scope").get<std::string>() + " ";
+    return s.find(" " + scope + " ") != std::string::npos;
+}
+
+TEST(docs_audience_only_in_user_token) {
+    json user = {{"sub", "u1"}};
+    token_claims::add_user_claims(user);
+    CHECK(aud_has(user, "wallet-docs"));
+    CHECK(scope_has(user, "docs:ask"));
+
+    json bot = {{"sub", "u1"}};
+    token_claims::add_telegram_bot_claims(bot);
+    CHECK(!aud_has(bot, "wallet-docs"));
+    CHECK(!scope_has(bot, "docs:ask"));
+
+    json mcp = {{"sub", "u1"}};
+    token_claims::add_mcp_claims(mcp);
+    CHECK(!aud_has(mcp, "wallet-docs"));
+    CHECK(!scope_has(mcp, "docs:ask"));
+
+    json subject = user;
+    subject["exp"] = 2000;
+    for (auto [aud, scope, actor] : {std::tuple{"wallet-mcp", "mcp:read", "wallet-ai"},
+                                     std::tuple{"wallet-report", "reports:read", "wallet-mcp"}}) {
+        json exchanged = {{"iat", 1000}};
+        token_claims::add_exchange_claims(exchanged, aud, scope, actor, subject);
+        CHECK(!aud_has(exchanged, "wallet-docs"));
+        CHECK(!scope_has(exchanged, "docs:ask"));
+    }
 }
 
 // change add-mcp-personal-tokens, D4: JWT обмена MCP-токена — только
