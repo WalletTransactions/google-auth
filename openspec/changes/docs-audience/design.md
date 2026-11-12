@@ -44,3 +44,13 @@ google-auth → wallet-docs → wallet-gateway → клиенты. Правка 
 - [Android присылает `platform` сам при входе] → допустимые значения ограничены
   (`android`, `ios`, `web`, `other`); для docs это подсказка, а не граница безопасности:
   админ определяется по `role`.
+
+## Заметки к выкату
+
+Потребители `aud` (задача 1.2, 2026-11-12): wallet-api, wallet-report, wallet-ai,
+wallet-mcp, wallet-gateway и wallet-telegram проверяют claim'ы одной функцией
+`jwt_claims::check` из `third_party/wallet-common` (копии совпадают с wallet-common).
+`aud` ищется вхождением в массив, `scope` — разбором по пробелам через `has_scope`;
+сравнения целиком нет. Остальные упоминания `"aud"` — фикстуры интеграционных тестов
+wallet-api. android-wallet и wallet-web токен не разбирают. Дополнительный адресат и scope
+безопасны для всех текущих потребителей.

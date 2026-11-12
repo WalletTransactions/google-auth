@@ -857,6 +857,14 @@ curl -X POST http://localhost:8090/auth/google/mobile \
   expense:write"`) — шаг 4; до него сессия бота получает тот же полный набор.
   С 2026-10-11 (`org/docs/TODO_wallet_ai.md`, §2) у обоих токенов в `aud`
   есть `wallet-ai`, в `scope` — `ai:use` (доступ к LLM-функциям).
+  С change `docs-audience` у пользовательского токена (браузер, Android,
+  обмен refresh) в `aud` есть ещё `wallet-docs`, в `scope` — `docs:ask`:
+  вопросы к справке по OpenSpec-спекам через `/api/docs/*`. Какие спеки
+  видны, wallet-docs решает сам по `role` и `platform`. Токен бота, JWT
+  MCP-токена и токены обмена `wallet-docs`/`docs:ask` не получают. Итого
+  пользовательский токен: `aud: ["wallet-api", "wallet-report",
+  "google-auth", "wallet-ai", "wallet-docs"]`, `scope: "wallet:read
+  wallet:write reports:read account ai:use docs:ask"`.
 - Старый формат значения в Redis (просто `user_id` строкой, до этого поля)
   `take_refresh_token` по-прежнему понимает — падать на нём не должен,
   просто вернёт устройство пустым.
