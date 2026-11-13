@@ -71,6 +71,22 @@ TEST(mcp_token_hash_is_base64url_sha256) {
     CHECK_EQ(h, mcp_tokens::detail::hash_token("wmcp_x"));
 }
 
+// change docs-mcp-audience, D1/D2: белый список адресатов.
+TEST(mcp_parse_audience_whitelist) {
+    using nlohmann::json;
+    auto parse = [](const char* text) { return mcp_tokens::detail::parse_audience(json::parse(text)); };
+    CHECK_EQ(*parse("{\"token\":\"x\"}"), std::string("wallet-report"));
+    CHECK_EQ(*parse("{\"audience\":\"wallet-report\"}"), std::string("wallet-report"));
+    CHECK_EQ(*parse("{\"audience\":\"wallet-docs\"}"), std::string("wallet-docs"));
+    CHECK(!parse("{\"audience\":\"wallet-api\"}").has_value());
+    CHECK(!parse("{\"audience\":\"\"}").has_value());
+    CHECK(!parse("{\"audience\":null}").has_value());
+    CHECK(!parse("{\"audience\":1}").has_value());
+    CHECK(!parse("{\"audience\":[\"wallet-docs\"]}").has_value());
+    // Не объект (мусорное тело) — прежний адресат: отказ даст проверка token.
+    CHECK_EQ(*mcp_tokens::detail::parse_audience(json()), std::string("wallet-report"));
+}
+
 TEST(mcp_expiry_slides_30_days) {
     uint64_t issued = 1'800'000'000ULL;
     uint64_t cap = issued + 90 * kDay;

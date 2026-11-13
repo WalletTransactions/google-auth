@@ -2,6 +2,10 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
+#include <map>
+#include <mutex>
+#include <sstream>
 
 #include "auth.hpp"
 #include "nlohmann/json.hpp"
@@ -59,6 +63,15 @@ std::string generate_token() { return std::string(kTokenPrefix) + b64::encode(cr
 
 std::string hash_token(const std::string& token) { return b64::encode(crypto::sha256(token)); }
 
+std::optional<std::string> parse_audience(const json& body) {
+    if (!body.is_object() || !body.contains("audience")) return std::string(token_claims::kAudWalletReport);
+    const json& a = body.at("audience");
+    if (!a.is_string()) return std::nullopt;
+    auto v = a.get<std::string>();
+    if (v == token_claims::kAudWalletReport || v == token_claims::kAudWalletDocs) return v;
+    return std::nullopt;
+}
+
 } // namespace detail
 
 namespace {
@@ -67,6 +80,16 @@ constexpr const char* kJson = "application/json";
 constexpr const char* kNameError = "нужно имя токена — от 1 до 64 символов";
 constexpr const char* kLimitError =
     "слишком много MCP-токенов — отзовите ненужные в «Моих устройствах» (максимум 10)";
+
+// Метрика с двумя лейблами — своя, как token_exchange::count: util/metrics
+// умеет один. audience — только значения белого списка либо "invalid".
+std::mutex g_metrics_mutex;
+std::map<std::pair<std::string, std::string>, std::uint64_t> g_exchange_counts; // (audience, result) -> n
+
+void count_exchange(const std::string& audience, const std::string& result) {
+    std::lock_guard<std::mutex> lock(g_metrics_mutex);
+    ++g_exchange_counts[{audience, result}];
+}
 
 void send_error(httplib::Response& res, int status, const std::string& message) {
     res.status = status;
@@ -133,20 +156,31 @@ void handle_issue(AppState& state, const httplib::Request& req, httplib::Respons
                     kJson);
 }
 
-// POST /internal/mcp/token {token} -> 200 {access_token, expires_in, user_id,
+// POST /internal/mcp/token {token[, audience]} -> 200 {access_token, expires_in, user_id,
 // device_id}; любой отказ — 401 {"error":"invalid_token"}, причины наружу не
 // различаются (только в журнале, без токена и его хэша).
 void handle_exchange(AppState& state, const httplib::Request& req, httplib::Response& res) {
     applog::set_route("POST /internal/mcp/token"); // литерал из register_routes ниже
 
-    auto reject = [&res](const char* reason) {
-        metrics::inc_counter("mcp_token_exchanges_total", "Обмены MCP-токена на JWT по результату.", "result",
-                             "invalid");
+    std::string audience_label = "invalid";
+    auto reject = [&res, &audience_label](const char* reason) {
+        count_exchange(audience_label, "invalid");
         applog::warn("mcp token rejected", {{"event", "mcp_token_rejected"}, {"reason", reason}});
         send_error(res, 401, "invalid_token");
     };
 
     json body = json::parse(req.body, nullptr, /*allow_exceptions=*/false);
+    // D2: адресат — до проверки токена; мусор не продлевает токен и не
+    // говорит, действителен ли он.
+    auto audience = detail::parse_audience(body);
+    if (!audience) {
+        count_exchange("invalid", "invalid_audience");
+        applog::warn("mcp token audience rejected", {{"event", "mcp_token_rejected"}, {"reason", "invalid_audience"}});
+        send_error(res, 400, "invalid_audience");
+        return;
+    }
+    audience_label = *audience;
+
     std::string token;
     if (body.is_object() && body.contains("token") && body.at("token").is_string()) {
         token = body.at("token").get<std::string>();
@@ -191,11 +225,13 @@ void handle_exchange(AppState& state, const httplib::Request& req, httplib::Resp
         {"device_id", record->device_id},
         {"platform", "mcp"},
     };
-    token_claims::add_mcp_claims(payload);
+    token_claims::add_mcp_claims(payload, *audience);
 
-    metrics::inc_counter("mcp_token_exchanges_total", "Обмены MCP-токена на JWT по результату.", "result", "ok");
-    applog::info("mcp token exchanged",
-                 {{"event", "mcp_token_exchanged"}, {"user_id", record->user_id}, {"device_id", record->device_id}});
+    count_exchange(*audience, "ok");
+    applog::info("mcp token exchanged", {{"event", "mcp_token_exchanged"},
+                                         {"user_id", record->user_id},
+                                         {"device_id", record->device_id},
+                                         {"audience", *audience}});
 
     res.set_content(json{{"access_token", jwt::sign_rs256(payload, *state.jwt_signing_key)},
                          {"expires_in", token_claims::kMcpTokenTtlSecs},
@@ -206,6 +242,19 @@ void handle_exchange(AppState& state, const httplib::Request& req, httplib::Resp
 }
 
 } // namespace
+
+std::string render_metrics() {
+    std::lock_guard<std::mutex> lock(g_metrics_mutex);
+    if (g_exchange_counts.empty()) return {};
+    std::ostringstream out;
+    out << "# HELP mcp_token_exchanges_total Обмены MCP-токена на JWT по адресату и результату.\n";
+    out << "# TYPE mcp_token_exchanges_total counter\n";
+    for (const auto& [key, n] : g_exchange_counts) {
+        out << "mcp_token_exchanges_total{audience=\"" << key.first << "\",result=\"" << key.second << "\"} " << n
+            << "\n";
+    }
+    return out.str();
+}
 
 void register_routes(httplib::Server& svr, AppState& state) {
     svr.Post("/auth/mcp-tokens", [&state](const httplib::Request& req, httplib::Response& res) {

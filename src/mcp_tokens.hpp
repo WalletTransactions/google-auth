@@ -23,6 +23,7 @@
 
 #include "app_state.hpp"
 #include "httplib.h"
+#include "nlohmann/json.hpp"
 
 namespace mcp_tokens {
 
@@ -32,6 +33,11 @@ inline constexpr const char* kTokenPrefix = "wmcp_";
 inline constexpr std::size_t kMaxTokensPerUser = 10;
 
 void register_routes(httplib::Server& svr, AppState& state);
+
+// Строки mcp_token_exchanges_total{audience,result} для GET /metrics (docs.cpp
+// дописывает их после metrics::render(): util/metrics умеет один лейбл).
+// Пусто, пока не было ни одного обмена.
+std::string render_metrics();
 
 // Чистые помощники — в заголовке ради юнит-тестов (tests/test_mcp_tokens.cpp).
 namespace detail {
@@ -50,6 +56,12 @@ std::string generate_token();
 
 // base64url(sha256(token)) — ключ в Redis и token_hash в GET /auth/devices.
 std::string hash_token(const std::string& token);
+
+// Адресат из тела POST /internal/mcp/token: нет поля — "wallet-report";
+// "wallet-report" и "wallet-docs" — как есть; всё остальное (другое имя, не
+// строка, null) — nullopt, то есть 400 invalid_audience. body — уже
+// разобранный JSON-объект.
+std::optional<std::string> parse_audience(const nlohmann::json& body);
 
 } // namespace detail
 

@@ -668,8 +668,10 @@ paths:
         (256 бит). Успешный обмен продлевает MCP-токен (см.
         `POST /auth/mcp-tokens`) и обновляет `last_used_at` сессии.
 
-        JWT: `aud: ["wallet-report"]`, `scope: "reports:read"`,
-        `platform: "mcp"`, без `role`/`email`/`name` — потребитель видит
+        JWT: по умолчанию `aud: ["wallet-report"]`, `scope: "reports:read"`;
+        с `audience: "wallet-docs"` — `aud: ["wallet-docs"]`,
+        `scope: "docs:ask"` (справка по спекам). Оба: `platform: "mcp"`, без
+        `role`/`email`/`name` — потребитель видит
         обычного пользователя, админский `as_user_id` в wallet-report через
         MCP недоступен. Отзыв MCP-токена действует на уже выданный JWT
         только по его `exp` (до 300 с). Клиенту — кешировать JWT до `exp`.
@@ -678,6 +680,9 @@ paths:
         различаются: неизвестный, отозванный, истёкший токен, без префикса
         `wmcp_`, неверной длины, тело не JSON, нет поля `token`,
         refresh-токен вместо MCP-токена (он при этом не тратится).
+
+        Другое значение `audience` — `400 {"error":"invalid_audience"}` до
+        проверки токена: токен при этом не продлевается.
       tags: [mcp]
       requestBody:
         required: true
@@ -687,12 +692,21 @@ paths:
               type: object
               properties:
                 token: {type: string, pattern: "^wmcp_[A-Za-z0-9_-]{43}$"}
+                audience:
+                  type: string
+                  enum: [wallet-report, wallet-docs]
+                  default: wallet-report
+                  description: Адресат выпускаемого JWT; scope выбирается по нему (reports:read / docs:ask)
               required: [token]
       responses:
         "200":
           description: JWT выпущен
           content:
             application/json: {schema: {$ref: "#/components/schemas/McpExchangeResult"}}
+        "400":
+          description: "`{\"error\":\"invalid_audience\"}` — адресат вне белого списка"
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
         "401":
           description: "`{\"error\":\"invalid_token\"}` — для всех причин отказа"
           content:
@@ -715,6 +729,7 @@ paths:
         |---|---|---|---|
         | `wallet-ai` | `wallet-ai` / `ai:use` | `wallet-mcp` | `mcp:read` |
         | `wallet-mcp` | `wallet-mcp` / `mcp:read` | `wallet-report` | `reports:read` |
+        | `wallet-mcp` | `wallet-mcp` / `mcp:read` | `wallet-docs` | `docs:ask` |
 
         Порядок проверок: секрет (`401 invalid_client`) → `grant_type`
         (`unsupported_grant_type`) → `subject_token_type` и обязательные поля
@@ -763,7 +778,7 @@ paths:
                 audience:
                   type: string
                   description: "Имя сервиса-адресата из таблицы политики (не URL; параметр `resource` RFC 8707 не принимается)"
-                  enum: [wallet-mcp, wallet-report]
+                  enum: [wallet-mcp, wallet-report, wallet-docs]
                 scope:
                   type: string
                   description: "Необязателен. Если указан — обязан совпасть со scope из таблицы, иначе `invalid_scope`"

@@ -46,6 +46,8 @@ struct PolicyRule {
 inline constexpr PolicyRule kPolicy[] = {
     {"wallet-ai", "wallet-ai", "ai:use", "wallet-mcp", "mcp:read"},
     {"wallet-mcp", "wallet-mcp", "mcp:read", "wallet-report", "reports:read"},
+    // change docs-mcp-audience: справка по спекам. wallet-ai её не получает.
+    {"wallet-mcp", "wallet-mcp", "mcp:read", "wallet-docs", "docs:ask"},
 };
 
 void register_routes(httplib::Server& svr, AppState& state);
