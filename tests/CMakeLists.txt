@@ -41,6 +41,7 @@ add_executable(google_auth_tests
     ${CMAKE_SOURCE_DIR}/src/util/url.cpp
     ${WALLET_COMMON_DIR}/util/dotenv.cpp
     ${WALLET_COMMON_DIR}/util/log.cpp
+    ${WALLET_COMMON_DIR}/util/pg_recover.cpp
     ${CMAKE_SOURCE_DIR}/src/util/time.cpp
 )
 

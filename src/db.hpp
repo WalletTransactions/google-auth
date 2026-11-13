@@ -23,6 +23,10 @@ extern "C" {
 typedef struct pg_conn PGconn;
 }
 
+namespace pg_recover {
+class Keepalive; // util/pg_recover.hpp; полный тип нужен только db.cpp
+}
+
 namespace db {
 
 struct Row {
@@ -92,6 +96,9 @@ private:
     std::mutex mutex_;
     bool log_params_;
     std::unordered_set<std::string> mask_param_names_;
+    // Фоновая проверка соединения раз в минуту (pg_recover::Keepalive).
+    // Транзакций у google-auth нет — флага in_transaction_ не нужно.
+    std::unique_ptr<pg_recover::Keepalive> keepalive_;
 };
 
 // Пул из N постоянных соединений — вместо ЕДИНСТВЕННОЙ Database на весь
