@@ -82,16 +82,27 @@ inline constexpr int kMcpTokenTtlSecs = 300;
 
 inline nlohmann::json mcp_audience() { return nlohmann::json::array({kAudWalletReport}); }
 
+// Вопросы к wallet-docs (change docs-mcp-audience): второй адресат JWT
+// обмена MCP-токена — для инструмента ask_docs в wallet-mcp.
+inline constexpr const char* kScopeDocsAsk = "docs:ask";
+
 // Дописывает iss/aud/scope и убирает role/email/name, если их кто-то
 // положил по ошибке: регрессия здесь была бы тихой (см.
-// tests/test_token_claims.cpp).
-inline void add_mcp_claims(nlohmann::json& payload) {
+// tests/test_token_claims.cpp). audience — wallet-report (по умолчанию,
+// reports:read) или wallet-docs (docs:ask); значение проверяет вызывающий
+// по белому списку, другое здесь трактуется как wallet-report.
+inline void add_mcp_claims(nlohmann::json& payload, const std::string& audience = kAudWalletReport) {
     payload.erase("role");
     payload.erase("email");
     payload.erase("name");
     payload["iss"] = kIssuer;
-    payload["aud"] = mcp_audience();
-    payload["scope"] = kScopeMcp;
+    if (audience == kAudWalletDocs) {
+        payload["aud"] = nlohmann::json::array({kAudWalletDocs});
+        payload["scope"] = kScopeDocsAsk;
+    } else {
+        payload["aud"] = mcp_audience();
+        payload["scope"] = kScopeMcp;
+    }
 }
 
 // JWT обмена токена (POST /internal/token/exchange, change add-token-exchange,

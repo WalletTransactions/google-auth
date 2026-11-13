@@ -126,6 +126,49 @@ TEST(exchange_decide_wallet_mcp_to_wallet_report) {
     CHECK_EQ(d.scope, std::string("reports:read"));
 }
 
+// change docs-mcp-audience: пара wallet-mcp → wallet-docs.
+TEST(exchange_decide_wallet_mcp_to_wallet_docs) {
+    json subject = {{"sub", "u"}, {"iss", "google-auth"}, {"aud", json::array({"wallet-mcp"})}, {"scope", "mcp:read"}};
+    auto d = token_exchange::detail::decide("wallet-mcp", subject, "wallet-docs", std::nullopt);
+    CHECK(d.outcome == Outcome::Ok);
+    CHECK_EQ(d.audience, std::string("wallet-docs"));
+    CHECK_EQ(d.scope, std::string("docs:ask"));
+    CHECK(token_exchange::detail::decide("wallet-mcp", subject, "wallet-docs", std::string("docs:ask")).outcome ==
+          Outcome::Ok);
+    // scope нельзя расширить и подменить на чужой.
+    CHECK(token_exchange::detail::decide("wallet-mcp", subject, "wallet-docs", std::string("docs:ask reports:read"))
+              .outcome == Outcome::InvalidScope);
+    CHECK(token_exchange::detail::decide("wallet-mcp", subject, "wallet-docs", std::string("reports:read")).outcome ==
+          Outcome::InvalidScope);
+    // subject без wallet-mcp в aud — invalid_grant.
+    CHECK(token_exchange::detail::decide("wallet-mcp", web_admin_claims(9999999999), "wallet-docs", std::nullopt)
+              .outcome == Outcome::InvalidGrant);
+    // wallet-ai справку не получает.
+    CHECK(token_exchange::detail::decide("wallet-ai", bot_claims(9999999999), "wallet-docs", std::nullopt).outcome ==
+          Outcome::InvalidTarget);
+}
+
+TEST(exchange_wallet_mcp_docs_token_inherits_platform_without_role) {
+    AppState state;
+    configure(state);
+    json subject = {{"sub", "u1"},
+                    {"iss", "google-auth"},
+                    {"aud", json::array({"wallet-mcp"})},
+                    {"scope", "mcp:read"},
+                    {"role", "admin"},
+                    {"device_id", "dev-9"},
+                    {"platform", "android"},
+                    {"exp", timeutil::now_epoch() + 300}};
+    auto r = call(state, make_request(kMcpSecret, exchange_form(sign(state, subject), "wallet-docs")));
+    CHECK_EQ(r.status, 200);
+    json p = verify(state, r.body.at("access_token").get<std::string>());
+    CHECK_EQ(p.at("aud"), (json::array({"wallet-docs"})));
+    CHECK_EQ(p.at("scope").get<std::string>(), std::string("docs:ask"));
+    CHECK_EQ(p.at("platform").get<std::string>(), std::string("android"));
+    CHECK_EQ(p.at("device_id").get<std::string>(), std::string("dev-9"));
+    CHECK(!p.contains("role"));
+}
+
 TEST(exchange_decide_foreign_audience_is_invalid_target) {
     json bot = bot_claims(9999999999);
     CHECK(token_exchange::detail::decide("wallet-ai", bot, "wallet-api", std::nullopt).outcome ==

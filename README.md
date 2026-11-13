@@ -585,6 +585,18 @@ Google, ни ротировать refresh, а 15-минутный access-JWT в 
 | `platform` | `mcp` |
 | `iat`, `exp` | `exp` = `iat` + 300 |
 
+**Адресат `wallet-docs`.** Тело может нести `"audience":"wallet-docs"` (по
+умолчанию и при `"wallet-report"` — таблица выше): тогда `aud` =
+`["wallet-docs"]`, `scope` = `docs:ask`, остальное то же (`platform` `mcp`,
+без `role`). Другое значение — `400 {"error":"invalid_audience"}` до проверки
+токена (токен не продлевается). Пример:
+
+```sh
+curl -s -X POST http://google-auth:8080/internal/mcp/token \
+  -H 'Content-Type: application/json' \
+  -d '{"token":"wmcp_...","audience":"wallet-docs"}'
+```
+
 **Без `role`, `email`, `name`** (`token_claims::add_mcp_claims`, тест в
 `tests/test_token_claims.cpp`): wallet-report видит обычного пользователя,
 админский `as_user_id` через MCP недоступен даже администратору. JWT в Redis
@@ -609,7 +621,7 @@ Google, ни ротировать refresh, а 15-минутный access-JWT в 
 `org/docs/TODO_service_auth_tls.md`.
 
 Метрики: `mcp_tokens_issued_total{result="ok"}`,
-`mcp_token_exchanges_total{result="ok|invalid"}`. Журнал:
+`mcp_token_exchanges_total{audience="wallet-report|wallet-docs|invalid",result="ok|invalid|invalid_audience"}`. Журнал:
 `mcp_token_issued`, `mcp_token_exchanged` (`user_id`, `device_id`),
 `mcp_token_rejected`.
 
@@ -638,6 +650,7 @@ Google, ни ротировать refresh, а 15-минутный access-JWT в 
 | --- | --- | --- | --- |
 | `wallet-ai` | `wallet-ai` / `ai:use` | `wallet-mcp` | `mcp:read` |
 | `wallet-mcp` | `wallet-mcp` / `mcp:read` | `wallet-report` | `reports:read` |
+| `wallet-mcp` | `wallet-mcp` / `mcp:read` | `wallet-docs` | `docs:ask` |
 
 `audience` — имя сервиса, не URL; `resource` (RFC 8707) не принимается.
 `scope` необязателен; если указан, обязан совпасть со scope таблицы.

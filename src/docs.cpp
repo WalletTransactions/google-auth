@@ -3,6 +3,7 @@
 #include <fstream>
 #include <sstream>
 
+#include "mcp_tokens.hpp"
 #include "nlohmann/json.hpp"
 #include "token_exchange.hpp"
 #include "util/metrics.hpp"
@@ -87,8 +88,8 @@ void handle_healthz(const httplib::Request&, httplib::Response& res) {
 // внутренняя ручка для скрейпа Prometheus, не часть публичного API сервиса.
 void handle_metrics(const httplib::Request&, httplib::Response& res) {
     // token_exchange_total{actor,result} — свой счётчик с двумя лейблами (см.
-    // token_exchange::render_metrics).
-    res.set_content(metrics::render() + token_exchange::render_metrics(),
+    // token_exchange::render_metrics); mcp_token_exchanges_total{audience,result} — так же.
+    res.set_content(metrics::render() + token_exchange::render_metrics() + mcp_tokens::render_metrics(),
                     "text/plain; version=0.0.4; charset=utf-8");
 }
 

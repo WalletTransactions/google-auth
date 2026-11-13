@@ -86,6 +86,24 @@ TEST(mcp_claims_are_read_only_report_without_role) {
     CHECK_EQ(token_claims::kMcpTokenTtlSecs, 300);
 }
 
+// change docs-mcp-audience: адресат wallet-docs — docs:ask, не reports:read.
+TEST(mcp_claims_docs_audience_is_docs_ask_only) {
+    json payload = {{"sub", "u1"}, {"role", "admin"}, {"platform", "mcp"}};
+    token_claims::add_mcp_claims(payload, "wallet-docs");
+    CHECK_EQ(payload.at("aud"), (json::array({"wallet-docs"})));
+    CHECK_EQ(payload.at("scope").get<std::string>(), std::string("docs:ask"));
+    CHECK_EQ(payload.at("iss").get<std::string>(), std::string("google-auth"));
+    CHECK(!payload.contains("role"));
+    CHECK(!payload.contains("email"));
+    CHECK(!payload.contains("name"));
+    CHECK_EQ(payload.at("platform").get<std::string>(), std::string("mcp"));
+
+    json report = {{"sub", "u1"}};
+    token_claims::add_mcp_claims(report, "wallet-report");
+    CHECK_EQ(report.at("aud"), (json::array({"wallet-report"})));
+    CHECK_EQ(report.at("scope").get<std::string>(), std::string("reports:read"));
+}
+
 TEST(mcp_claims_strip_role_email_name_if_present) {
     json payload = {{"sub", "u1"}, {"role", "admin"}, {"email", "a@b"}, {"name", "N"}};
     token_claims::add_mcp_claims(payload);
