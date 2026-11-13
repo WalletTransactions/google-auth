@@ -3,7 +3,7 @@
 ## 1. Обмен MCP-токена
 
 - [x] 1.1 `audience` в теле `POST /internal/mcp/token`: белый список `wallet-report` (по умолчанию) и `wallet-docs`, другое значение — `400 {"error":"invalid_audience"}` до проверки токена; выбор `aud`/`scope` по таблице. Проверка: юнит-тесты — без поля прежний JWT (`aud` `wallet-report`, `reports:read`), `wallet-docs` даёт `aud` `["wallet-docs"]`, `scope` `docs:ask`, `platform` `mcp`, без `role`/`email`/`name`; `wallet-api` — `400`, токен при этом не продлевается.
-- [ ] 1.2 Метка `audience` у `mcp_token_exchanges_total`. Проверка: тест на значения лейбла; `/metrics` на живом стеке показывает оба адресата после двух вызовов.
+- [x] 1.2 Метка `audience` у `mcp_token_exchanges_total`. Проверка: тест на значения лейбла; `/metrics` на живом стеке показывает оба адресата после двух вызовов.
 
 ## 2. Обмен RFC 8693
 
@@ -16,7 +16,7 @@
 ## 4. Сборка и проверка на стенде
 
 - [x] 4.1 Сборка образа одним сервисом за раз (`docker build --memory=3g --build-arg BUILD_JOBS=3 --target test`). Проверка: все юнит-тесты проходят.
-- [ ] 4.2 Выкат на test через rc-тег. Проверка: `curl` к `/internal/mcp/token` изнутри контура — `audience: "wallet-docs"` даёт JWT с нужными claim'ами, без поля — прежний JWT; wallet-report принимает второй и отвергает первый; остальные сервисы не перезапускались.
+- [x] 4.2 Выкат на test через rc-тег. Проверка: `curl` к `/internal/mcp/token` изнутри контура — `audience: "wallet-docs"` даёт JWT с нужными claim'ами, без поля — прежний JWT; wallet-report принимает второй и отвергает первый; остальные сервисы не перезапускались.
 
 ## Заметки к выкату
 
