@@ -91,6 +91,7 @@ add_executable(google_auth
     ${WALLET_COMMON_DIR}/util/dotenv.cpp
     ${WALLET_COMMON_DIR}/util/log.cpp
     ${WALLET_COMMON_DIR}/util/metrics.cpp
+    ${WALLET_COMMON_DIR}/util/pg_recover.cpp
     src/util/time.cpp
 )
 
