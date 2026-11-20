@@ -24,7 +24,18 @@ add_executable(google_auth_tests
     test_telegram.cpp
     test_mcp_tokens.cpp
     test_token_exchange.cpp
+    test_passwords.cpp
+    test_repo_passwords_it.cpp
+    test_redis_replies.cpp
+    test_auth_config.cpp
+    test_request_info.cpp
+    test_auth_limits.cpp
+    test_password_claim_it.cpp
 
+    ${CMAKE_SOURCE_DIR}/src/passwords.cpp
+    ${CMAKE_SOURCE_DIR}/src/auth_config.cpp
+    ${CMAKE_SOURCE_DIR}/src/auth_limits.cpp
+    ${CMAKE_SOURCE_DIR}/src/request_info.cpp
     ${CMAKE_SOURCE_DIR}/src/auth.cpp
     ${CMAKE_SOURCE_DIR}/src/telegram.cpp
     ${CMAKE_SOURCE_DIR}/src/mcp_tokens.cpp
@@ -33,6 +44,7 @@ add_executable(google_auth_tests
     ${CMAKE_SOURCE_DIR}/src/db.cpp
     ${CMAKE_SOURCE_DIR}/src/redis_client.cpp
     ${WALLET_COMMON_DIR}/util/base64.cpp
+    ${WALLET_COMMON_DIR}/util/hex.cpp
     ${WALLET_COMMON_DIR}/util/crypto.cpp
     ${WALLET_COMMON_DIR}/util/jwt.cpp
     ${WALLET_COMMON_DIR}/util/jwt_claims.cpp

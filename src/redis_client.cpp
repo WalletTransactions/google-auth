@@ -304,4 +304,35 @@ std::optional<int64_t> Client::expiretime(const std::string& key) {
     return secs;
 }
 
+int64_t Client::incr(const std::string& key) {
+    return detail::parse_integer(send_command({"INCR", key}));
+}
+
+std::optional<int64_t> Client::ttl(const std::string& key) {
+    return detail::parse_ttl(send_command({"TTL", key}));
+}
+
+namespace detail {
+
+int64_t parse_integer(const std::optional<std::string>& reply) {
+    if (!reply || reply->empty()) throw std::runtime_error("Redis: ожидался integer-ответ");
+    std::size_t used = 0;
+    int64_t value = 0;
+    try {
+        value = std::stoll(*reply, &used);
+    } catch (const std::exception&) {
+        throw std::runtime_error("Redis: ожидался integer-ответ, получено: " + *reply);
+    }
+    if (used != reply->size()) throw std::runtime_error("Redis: ожидался integer-ответ, получено: " + *reply);
+    return value;
+}
+
+std::optional<int64_t> parse_ttl(const std::optional<std::string>& reply) {
+    int64_t secs = parse_integer(reply);
+    if (secs == -2) return std::nullopt;
+    return secs;
+}
+
+} // namespace detail
+
 } // namespace redis

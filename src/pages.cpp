@@ -39,20 +39,27 @@ std::string render(std::string tmpl, const std::unordered_map<std::string, std::
 
 } // namespace
 
-std::string index() {
+std::string index(const AuthConfig& config) {
     static const char* tmpl = R"HTML(<!doctype html>
 <html lang="ru">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Вход через Google</title>
+<title>Вход</title>
 <link rel="icon" href="/favicon.svg">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
   <div class="card">
-    <h1>Проверка Google-аккаунта</h1>
-    <p class="sub">Нажмите кнопку ниже, чтобы войти через свою Google-учётную запись.
+    <h1>Вход в аккаунт</h1>
+{{google_block}}{{password_block}}    <p class="sub-id">Обычно эту страницу не видно — гейтвей открывает
+    вместо неё SPA (wallet-web). Вы попали сюда либо в обход гейтвея,
+    напрямую на :8080, либо app.js не смог получить /auth/me.</p>
+  </div>
+</body>
+</html>)HTML";
+
+    static const char* google_block = R"HTML(    <p class="sub">Нажмите кнопку ниже, чтобы войти через свою Google-учётную запись.
     Сервер проверит подпись токена и покажет, кто вы.</p>
     <a class="google-btn" href="/auth/google">
       <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true">
@@ -63,13 +70,16 @@ std::string index() {
       </svg>
       Войти через Google
     </a>
-    <p class="sub-id">Обычно эту страницу не видно — гейтвей открывает
-    вместо неё SPA (wallet-web). Вы попали сюда либо в обход гейтвея,
-    напрямую на :8080, либо app.js не смог получить /auth/me.</p>
-  </div>
-</body>
-</html>)HTML";
-    return render(tmpl, {});
+)HTML";
+
+    // Формы входа здесь нет: пароль по HTTP не принимается без TLS, а форму входа
+    // даёт wallet-web. Страница только подсказывает, как войти в обход него.
+    static const char* password_block = R"HTML(    <p class="sub">Вход по email и паролю выполняется запросом
+    <code>POST /auth/login</code> (JSON <code>{"email", "password"}</code>); форму входа показывает приложение.</p>
+)HTML";
+
+    return render(tmpl, {{"google_block", config.google_enabled() ? google_block : ""},
+                         {"password_block", config.password_enabled() ? password_block : ""}});
 }
 
 std::string error(const std::string& message) {

@@ -158,6 +158,20 @@ email проверка пароля SHALL выполняться на фикти
 - **WHEN** после двух неудач введён верный пароль
 - **THEN** вход проходит, счётчик неудач по этому email обнуляется
 
+### Requirement: Что считается попыткой
+Каждая попытка регистрации SHALL считаться только по IP, не по email: иначе
+чужой адрес можно было бы заблокировать, «регистрируя» его. Неверный
+`current_password` в `POST /auth/password` SHALL считаться неудачей по email
+учётной записи и по IP, как неверный пароль при входе.
+
+#### Scenario: Регистрация чужого адреса
+- **WHEN** с одного IP много раз регистрируют `victim@mail.com`
+- **THEN** счётчик по email этого адреса не растёт, и владелец может войти
+
+#### Scenario: Подбор текущего пароля
+- **WHEN** в `POST /auth/password` пять раз передан неверный `current_password`
+- **THEN** шестая попытка отвечает `429`, пароль не проверяется
+
 ### Requirement: Отказ при превышении лимита
 Если неудач по email не меньше `AUTH_FAIL_MAX_PER_EMAIL` (по умолчанию 5) или
 по IP не меньше `AUTH_FAIL_MAX_PER_IP` (по умолчанию 30), вход и регистрация
@@ -177,8 +191,9 @@ SHALL отвечать `429` `{"error":"слишком много попыток
 - **THEN** `POST /auth/login` отвечает `503`, пароль не проверяется
 
 ### Requirement: Пароль только по защищённому соединению
-`POST /auth/register`, `POST /auth/login` и `POST /auth/password` SHALL
-принимать пароль, только если запрос пришёл с `X-Forwarded-Proto: https`.
+`POST /auth/register`, `POST /auth/login`, `POST /auth/password` и
+`POST /admin/users/{id}/password` SHALL принимать пароль, только если запрос
+пришёл с `X-Forwarded-Proto: https`.
 Иначе SHALL отвечать `403` `{"error":"insecure_transport"}` без чтения тела,
 если не включено `ALLOW_INSECURE_AUTH=true`. При включённом
 `ALLOW_INSECURE_AUTH` сервис SHALL при запуске писать в журнал предупреждение

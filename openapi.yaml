@@ -4,9 +4,12 @@ info:
   version: "1.0.0"
   description: |
     Вход через Google (Authorization Code + PKCE для браузера, id_token +
-    Credential Manager для Android) и собственная сессия проекта (JWT RS256
-    access + непрозрачный ротируемый refresh). См. `google-auth/README.md`
-    за обоснованиями и `org/docs/TODO_mobile_sync.md` за историей решений.
+    Credential Manager для Android), вход по email и паролю (`/auth/register`,
+    `/auth/login`, `/auth/password`) и собственная сессия проекта (JWT RS256
+    access + непрозрачный ротируемый refresh). Какие способы входа включены и
+    открыта ли регистрация, задают `AUTH_METHODS` и `REGISTRATION` (см.
+    `GET /auth/methods`). См. `google-auth/README.md` за обоснованиями и
+    `org/docs/TODO_mobile_sync.md` за историей решений.
 
     В проде запросы обычно идут через `wallet-gateway` (порт 8090), который
     проксирует `/auth/*` и `/admin/*` СЮДА БЕЗ собственной проверки токена —
@@ -21,6 +24,11 @@ info:
       рендерят HTML-страницу с текстом причины при статусе **200**. Различать
       успех/неудачу можно только по итоговому URL (302 на `/` — успех) или по
       содержимому HTML.
+    - Ручки, принимающие пароль (`/auth/register`, `/auth/login`,
+      `/auth/password`, `/admin/users/{id}/password`), отвечают `403`
+      `{"error":"insecure_transport"}` на запрос без `X-Forwarded-Proto: https`
+      (если не включено `ALLOW_INSECURE_AUTH`); при превышении лимита неудачных
+      попыток — `429` с `Retry-After`, при недоступном Redis — `503`.
     - Мгновенный отзыв токена (`/auth/logout`, `/admin/users/{id}/logout`,
       `/auth/devices/revoke*`) действует ТОЛЬКО для проверок внутри этого
       сервиса (`GET /auth/me`, `/admin/*`) — `wallet-api`/`wallet-gateway`
@@ -35,6 +43,8 @@ tags:
     description: Вход через Google в браузере (Authorization Code + PKCE)
   - name: mobile-login
     description: Вход через Google на Android (Credential Manager + id_token)
+  - name: password-login
+    description: "Вход, регистрация и смена пароля по email и паролю (src/password_auth.cpp); включается AUTH_METHODS=password|both"
   - name: session
     description: Собственная сессия (JWT) — обновление, профиль, выход
   - name: jwks
@@ -126,7 +136,10 @@ paths:
   /:
     get:
       operationId: getIndexPage
-      summary: Статическая HTML-страница со ссылкой на вход через Google
+      summary: Стартовая HTML-страница со ссылками на включённые способы входа
+      description: |
+        Кнопка «Войти через Google» — при `AUTH_METHODS=google|both`; подсказка
+        про вход по паролю (`POST /auth/login`) — при `password|both`.
       tags: [browser-login]
       security: []
       responses:
@@ -153,6 +166,10 @@ paths:
           description: Редирект на страницу входа Google
           headers:
             Location: {schema: {type: string, format: uri}}
+        "403":
+          description: Вход через Google отключён настройкой (`AUTH_METHODS=password`) — `auth_method_disabled`
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
 
   /auth/google/callback:
     get:
@@ -246,6 +263,10 @@ paths:
       tags: [mobile-login]
       security: []
       responses:
+        "403":
+          description: Вход через Google отключён настройкой (`AUTH_METHODS=password`) — `auth_method_disabled`
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
         "200":
           description: Nonce выдан
           content:
@@ -267,7 +288,10 @@ paths:
         хранит их сам, см. `org/docs/TODO_mobile_sync.md`, Фаза 3 —
         EncryptedSharedPreferences). Регистрация нового пользователя — без
         страницы подтверждения (сам тап "Войти через Google" в приложении
-        уже явное действие).
+        уже явное действие). Если `id_token` содержит `email_verified=true` и
+        email совпадает с неподтверждённой парольной учётной записью без
+        `google_sub`, запись переходит к владельцу: привязывается `google_sub`,
+        пароль удаляется, прежние сессии отзываются.
       tags: [mobile-login]
       security: []
       requestBody:
@@ -301,6 +325,10 @@ paths:
           description: id_token не прошёл верификацию (подпись/issuer/audience/exp), либо nonce отсутствует/неизвестен/уже использован
           content:
             application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "403":
+          description: Вход через Google отключён настройкой (`AUTH_METHODS=password`) — `auth_method_disabled`
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
         "200":
           description: Вход выполнен (или аккаунт создан) — своя пара токенов
           content:
@@ -312,6 +340,197 @@ paths:
                   refresh_token: {type: string, description: "Непрозрачная строка, обменивается через POST /auth/refresh"}
                   expires_in: {type: integer, description: "TTL access_token в секундах (по умолчанию 900)"}
                 required: [access_token, refresh_token, expires_in]
+
+  /auth/methods:
+    get:
+      operationId: getAuthMethods
+      summary: Какие способы входа включены и открыта ли регистрация
+      description: |
+        Без аутентификации и при любом `AUTH_METHODS`. Клиенты по ответу решают,
+        какие кнопки показывать. `registration` — `true`, только если включён
+        `password` и `REGISTRATION=open`.
+      tags: [password-login]
+      security: []
+      responses:
+        "200":
+          description: Включённые способы входа (порядок `password`, `google`)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  methods:
+                    type: array
+                    items: {type: string, enum: [password, google]}
+                  registration: {type: boolean}
+                required: [methods, registration]
+              examples:
+                both: {value: {methods: [password, google], registration: true}}
+                googleOnly: {value: {methods: [google], registration: false}}
+
+  /auth/register:
+    post:
+      operationId: registerWithPassword
+      summary: Регистрация по email и паролю
+      description: |
+        Создаёт пользователя с `email_verified=false` и ролью `user` (даже для
+        адреса из `ADMIN_EMAILS`: email не подтверждён). Сессию НЕ выпускает —
+        для входа затем нужен `POST /auth/login`. Ответ одинаков независимо от
+        того, свободен ли email: `202`, при занятом адресе запись и пароль не
+        меняются (чтобы нельзя было перебирать чужие почты). Email приводится к
+        нижнему регистру. Те же лимиты попыток, что у входа; каждая попытка
+        считается по IP.
+
+        Принимает пароль только по защищённому соединению
+        (`X-Forwarded-Proto: https`), если не включён `ALLOW_INSECURE_AUTH`.
+      tags: [password-login]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/PasswordRegisterRequest"}
+      responses:
+        "202":
+          description: Принято (учётная запись создана либо адрес уже занят — ответ тот же)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: {type: string, enum: [accepted]}
+                required: [status]
+        "400":
+          description: "Не JSON (`invalid JSON body`), недопустимый email (`недопустимый email`) или пароль не от 10 до 128 символов"
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "403":
+          description: "`auth_method_disabled` (AUTH_METHODS=google), `registration_closed` (REGISTRATION=closed) или `insecure_transport`"
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "429":
+          description: Слишком много попыток — повторите через `Retry-After` секунд
+          headers:
+            Retry-After: {schema: {type: integer}}
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "503":
+          description: Redis (счётчики попыток) недоступен — вход и регистрация закрыты, а не открыты без лимитов
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+
+  /auth/login:
+    post:
+      operationId: loginWithPassword
+      summary: Вход по email и паролю
+      description: |
+        Выпускает ту же сессию, что и вход через Google (access-JWT + refresh).
+
+        - Без `platform` или с `platform: web` — браузерная сессия: два
+          `Set-Cookie` (`session`, `refresh_token`), в теле профиль. `device_id`
+          новый на каждый вход, `device_name` — `User-Agent`.
+        - С `platform` `android`/`ios`/`other` — мобильная сессия: `device_id`
+          обязателен, ответ `{access_token, refresh_token, expires_in}`, cookie нет.
+
+        Любая неудача (нет такого email, неверный пароль, у записи нет пароля,
+        аккаунт только Google) — один и тот же `401`; время ответа не зависит от
+        того, существует ли email. После пяти подряд неудач по email (или 30 по
+        IP) даже верный пароль получает `429` на окно `AUTH_FAIL_WINDOW_SECS`.
+        Успешный вход сбрасывает счётчик по email.
+
+        Принимает пароль только по защищённому соединению
+        (`X-Forwarded-Proto: https`), если не включён `ALLOW_INSECURE_AUTH`.
+      tags: [password-login]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/PasswordLoginRequest"}
+      responses:
+        "200":
+          description: Вход выполнен
+          headers:
+            Set-Cookie:
+              description: "Только для web: `session` (access) и `refresh_token` (Path=/auth)"
+              schema: {type: string}
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - {$ref: "#/components/schemas/PasswordLoginWebResponse"}
+                  - {$ref: "#/components/schemas/PasswordLoginMobileResponse"}
+        "400":
+          description: "Не JSON, недопустимый email, пароль не от 10 до 128 символов, недопустимый `platform` или нет `device_id` у мобильного входа"
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "401":
+          description: "Неверный email или пароль (`неверный email или пароль`) — единый ответ на все причины"
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "403":
+          description: "`auth_method_disabled` (AUTH_METHODS=google) или `insecure_transport`"
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "429":
+          description: Слишком много неудачных попыток — повторите через `Retry-After` секунд, пароль не проверялся
+          headers:
+            Retry-After: {schema: {type: integer}}
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "503":
+          description: Redis (счётчики попыток) недоступен — пароль не проверялся
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+
+  /auth/password:
+    post:
+      operationId: setOrChangePassword
+      summary: Установить или сменить свой пароль
+      description: |
+        Если у пользователя пароль уже есть, `current_password` обязателен и
+        должен быть верен (подбор текущего пароля считается теми же лимитами
+        попыток, что и вход). Пользователь, вошедший через Google и не имевший
+        пароля, задаёт его без `current_password`; `google_sub`, email и
+        `email_verified` не меняются. После успеха отзываются все остальные сессии
+        пользователя (в том числе персональные MCP-токены), текущая остаётся.
+        Если текущую сессию определить нечем (нет ни refresh-токена, ни
+        `device_id` в access-токене), отзываются все сессии, включая эту.
+
+        Принимает пароль только по защищённому соединению
+        (`X-Forwarded-Proto: https`), если не включён `ALLOW_INSECURE_AUTH`.
+      tags: [password-login]
+      security: [{bearerAuth: [], sessionCookie: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/PasswordChangeRequest"}
+      responses:
+        "204":
+          description: Пароль установлен или изменён, остальные сессии отозваны
+        "400":
+          description: "Не JSON или новый пароль не от 10 до 128 символов"
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "401":
+          description: "Не авторизован (`unauthenticated`) или неверный текущий пароль (`неверный текущий пароль`)"
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "403":
+          description: "`auth_method_disabled` (AUTH_METHODS=google) или `insecure_transport`"
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "429":
+          description: Слишком много неудачных попыток подбора текущего пароля
+          headers:
+            Retry-After: {schema: {type: integer}}
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "503":
+          description: Redis (счётчики попыток) недоступен
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
 
   /auth/me:
     get:
@@ -1119,6 +1338,53 @@ paths:
         "204":
           description: Все токены пользователя отозваны
 
+  /admin/users/{id}/password:
+    post:
+      operationId: adminResetUserPassword
+      summary: Задать пользователю новый пароль (сброс админом)
+      description: |
+        Устанавливает пароль пользователя и отзывает ВСЕ его сессии (access,
+        refresh и MCP-токены) — только для проверок внутри этого сервиса, см.
+        предупреждение в `info.description`. Работает при любом `AUTH_METHODS`.
+        Принимает пароль только по защищённому соединению, как остальные ручки с
+        паролем.
+      tags: [admin]
+      security: [{bearerAuth: [], sessionCookie: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+          description: Внутренний id пользователя (см. AdminUser.id)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                password: {type: string, minLength: 10, maxLength: 128}
+              required: [password]
+      responses:
+        "204":
+          description: Пароль задан, сессии пользователя отозваны
+        "400":
+          description: "Не JSON или пароль не от 10 до 128 символов"
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "401":
+          description: Не авторизован
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "403":
+          description: "Роль не admin (`forbidden`) или `insecure_transport`"
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+        "404":
+          description: Пользователь с таким id не найден
+          content:
+            application/json: {schema: {$ref: "#/components/schemas/Error"}}
+
 components:
   securitySchemes:
     bearerAuth:
@@ -1137,6 +1403,47 @@ components:
       properties:
         error: {type: string}
       required: [error]
+    PasswordRegisterRequest:
+      type: object
+      properties:
+        email: {type: string, maxLength: 254, description: "Приводится к нижнему регистру и обрезается по краям"}
+        password: {type: string, minLength: 10, maxLength: 128, description: "Длина считается в символах; других требований к составу нет"}
+        name: {type: string, description: "Необязательно; если пусто — часть email до `@`"}
+      required: [email, password]
+    PasswordLoginRequest:
+      type: object
+      properties:
+        email: {type: string, maxLength: 254}
+        password: {type: string, minLength: 10, maxLength: 128}
+        platform:
+          type: string
+          enum: [web, android, ios, other]
+          description: "Не указан или `web` — браузерная сессия (cookie); иначе мобильная (токены в теле, `device_id` обязателен)"
+        device_id: {type: string, description: "Обязателен при `platform` не `web`"}
+        device_name: {type: string, description: "Для показа в списке устройств"}
+      required: [email, password]
+    PasswordChangeRequest:
+      type: object
+      properties:
+        password: {type: string, minLength: 10, maxLength: 128, description: Новый пароль}
+        current_password: {type: string, description: "Обязателен, если у пользователя пароль уже есть"}
+      required: [password]
+    PasswordLoginWebResponse:
+      type: object
+      properties:
+        id: {type: string}
+        email: {type: string}
+        name: {type: string}
+        picture: {type: string}
+        role: {type: string, enum: [user, support, admin]}
+      required: [id, email, name, picture, role]
+    PasswordLoginMobileResponse:
+      type: object
+      properties:
+        access_token: {type: string, description: "JWT RS256, TTL см. expires_in"}
+        refresh_token: {type: string, description: "Непрозрачная строка, обменивается через POST /auth/refresh"}
+        expires_in: {type: integer, description: "TTL access_token в секундах (по умолчанию 900)"}
+      required: [access_token, refresh_token, expires_in]
     AdminUser:
       type: object
       properties:

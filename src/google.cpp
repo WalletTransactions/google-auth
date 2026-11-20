@@ -6,6 +6,7 @@
 #include "nlohmann/json.hpp"
 #include "pages.hpp"
 #include "repo.hpp"
+#include "request_info.hpp"
 #include "util/base64.hpp"
 #include "util/crypto.hpp"
 #include "util/jwt.hpp"
@@ -80,77 +81,33 @@ DeviceInfo browser_device(const httplib::Request& req) {
     return device;
 }
 
-void handle_index(const httplib::Request&, httplib::Response& res) {
+void handle_index(const AppState& state, const httplib::Request&, httplib::Response& res) {
     applog::set_route("GET /"); // литерал из register_routes ниже
-    res.set_content(pages::index(), kHtmlContentType);
+    res.set_content(pages::index(state.auth_config), kHtmlContentType);
 }
 
-// Какой redirect_uri слать Google для ЭТОГО конкретного запроса. Раньше было
-// одно статическое значение (AppState::redirect_url) — этого хватало, пока
-// сервис был доступен только с одного адреса. Теперь тот же сервис должен
-// пускать и локально (localhost — с этой же машины), и с устройств в LAN
-// (см. чат про self-hairpin и nip.io) одновременно, а Google Console не
-// позволяет один redirect_uri — только СПИСОК заранее известных точных
-// значений (см. AppState::allowed_redirect_uris). Поэтому: смотрим, с каким
-// Host реально пришёл браузер, и если он совпадает с одним из уже
-// зарегистрированных в Google Console redirect_uri — используем его; иначе
-// — безопасный фолбэк (state.redirect_url), а не то, что попросил клиент
-// (Host — заголовок, который шлёт сам клиент, доверять ему напрямую без
-// сверки со списком нельзя).
-//
-// X-Forwarded-Host, если есть — приоритетнее Host: браузер обычно ходит
-// через wallet-gateway (см. его main.cpp, proxy_request), а тот НАМЕРЕННО
-// не форвардит сырой Host (апстрим иначе получил бы "google-auth:8080"
-// вместо адреса, которым пользовался браузер) и кладёт исходный Host сюда
-// отдельно. Прямые запросы мимо гейтвея (см. README, ":8080") этого
-// заголовка не несут — тогда используем обычный Host.
-//
-// Домашняя подсеть 192.168.*: устройство в LAN обычно набирает голый IP
-// (`http://192.168.1.105:8090`, проще запомнить), а Google принимает в
-// redirect_uri только доменные имена ("must use a domain that is a valid
-// top private domain") — отсюда nip.io-адрес в ALLOWED_REDIRECT_URIS (см.
-// .env.example). Голый Host из этой подсети побайтово НЕ совпадал с
-// зарегистрированной nip.io-строкой, и вход молча падал в фолбэк на
-// REDIRECT_URL (localhost) — здесь IP переписывается в свой nip.io-
-// эквивалент ДО сверки со списком ниже, поэтому набирать длинный nip.io-адрес
-// руками больше не нужно. Другие подсети (10.*, 172.16-31.*) и уже готовые
-// домены (localhost, сам nip.io) не трогает — не тот случай, который просил
-// исправить пользователь, и не обязаны совпадать с этим костылём. Сверка
-// allowed_redirect_uris.count(...) ниже не ослабляется этим переписыванием:
-// не зарегистрированный nip.io-адрес всё равно уйдёт в фолбэк, как и раньше.
-std::string rewrite_lan_ip_to_nip_io(const std::string& host) {
-    if (host.rfind("192.168.", 0) != 0) return host;
-    std::string::size_type colon = host.find(':');
-    std::string ip = colon == std::string::npos ? host : host.substr(0, colon);
-    std::string rest = colon == std::string::npos ? std::string() : host.substr(colon);
-    // Только голый IP: "192.168.1.105.nip.io" тоже начинается с "192.168.",
-    // и без этой проверки превращался в "...nip.io.nip.io" и падал в фолбэк.
-    if (ip.find_first_not_of("0123456789.") != std::string::npos) return host;
-    return ip + ".nip.io" + rest;
-}
+// Какой redirect_uri слать Google для ЭТОГО конкретного запроса — см.
+// request_info::resolve_redirect_uri (хост из X-Forwarded-Host/Host со сверкой
+// по ALLOWED_REDIRECT_URIS, схема из X-Forwarded-Proto: https за TLS, иначе
+// http; голый LAN-IP 192.168.* переписывается в nip.io).
 
-std::string resolve_redirect_uri(const AppState& state, const httplib::Request& req) {
-    std::string host = req.get_header_value("X-Forwarded-Host");
-    if (host.empty()) host = req.get_header_value("Host");
-    if (host.empty()) return state.redirect_url;
-
-    host = rewrite_lan_ip_to_nip_io(host);
-
-    // LAN-only на этом этапе проекта — TLS нет ни у гейтвея, ни у прямого
-    // доступа (см. org/docs/TODO_mobile_sync.md, 1.4), поэтому схема всегда
-    // http, не строим её из запроса.
-    std::string candidate = "http://" + host + "/auth/google/callback";
-    if (state.allowed_redirect_uris.count(candidate) > 0) return candidate;
-    return state.redirect_url;
+// Ответ отключённого настройкой способа входа (AUTH_METHODS=password) — общий
+// для /auth/google, /auth/nonce и /auth/google/mobile. true — Google включён.
+bool google_enabled_or_403(const AppState& state, httplib::Response& res) {
+    if (state.auth_config.google_enabled()) return true;
+    res.status = 403;
+    res.set_content(json{{"error", "auth_method_disabled"}}.dump(), "application/json");
+    return false;
 }
 
 // Шаг 2: строим ссылку на Google OAuth 2.0 с PKCE и CSRF-state, редиректим.
 void handle_login(AppState& state, const httplib::Request& req, httplib::Response& res) {
     applog::set_route("GET /auth/google"); // литерал из register_routes ниже
+    if (!google_enabled_or_403(state, res)) return;
     std::string csrf_state = random_string(32);
     std::string code_verifier = random_string(64);
     std::string code_challenge = pkce_challenge(code_verifier);
-    std::string redirect_uri = resolve_redirect_uri(state, req);
+    std::string redirect_uri = request_info::resolve_redirect_uri(state, req);
 
     {
         std::lock_guard<std::mutex> lock(state.pending_mutex);
@@ -291,6 +248,19 @@ void handle_verified_claims(AppState& state, const GoogleClaims& claims, const D
         return;
     }
 
+    // Google подтвердил email, а у нас есть неподтверждённая парольная запись с
+    // этим адресом — забираем её без страницы подтверждения (спека password-auth,
+    // «Google забирает неподтверждённый парольный аккаунт»): пароль удалён,
+    // старые сессии отозваны, выпускаем новую.
+    if (auto claimed = auth::claim_password_account(state, claims.sub, claims.email, claims.email_verified,
+                                                    claims.name, claims.picture)) {
+        applog::set_user(claimed->id);
+        auth::TokenPair tokens = auth::issue_tokens(state, *claimed, device);
+        auth::set_session_cookies(res, state, tokens);
+        res.set_redirect("/");
+        return;
+    }
+
     // Личность Google подтвердил, но аккаунта у нас ещё нет — не создаём
     // молча. Откладываем проверенные claims и ждём явного подтверждения на
     // POST /auth/google/confirm-signup (см. ниже).
@@ -355,6 +325,7 @@ void handle_confirm_signup(AppState& state, const httplib::Request& req, httplib
 // подписан Google и не привязан к получателю иначе).
 void handle_nonce(AppState& state, const httplib::Request&, httplib::Response& res) {
     applog::set_route("POST /auth/nonce"); // литерал из register_routes ниже
+    if (!google_enabled_or_403(state, res)) return;
     std::string nonce = random_string(32);
     {
         std::lock_guard<std::mutex> lock(state.issued_nonces_mutex);
@@ -382,6 +353,7 @@ void handle_nonce(AppState& state, const httplib::Request&, httplib::Response& r
 // рендерить HTML пришлось бы через WebView, что хуже, чем нативный экран.
 void handle_mobile_login(AppState& state, const httplib::Request& req, httplib::Response& res) {
     applog::set_route("POST /auth/google/mobile"); // литерал из register_routes ниже
+    if (!google_enabled_or_403(state, res)) return;
     json body;
     try {
         body = json::parse(req.body);
@@ -438,9 +410,15 @@ void handle_mobile_login(AppState& state, const httplib::Request& req, httplib::
         return;
     }
 
-    UserRecord user = auth::get_or_create_user(state, claims->sub, claims->email,
-                                                claims->email_verified, claims->name,
-                                                claims->picture);
+    // Тот же захват неподтверждённого парольного аккаунта, что и в браузерном
+    // входе (handle_verified_claims): если он сработал, пользователь — забранная
+    // запись, иначе обычный вход/создание по google_sub.
+    std::optional<UserRecord> claimed = auth::claim_password_account(
+        state, claims->sub, claims->email, claims->email_verified, claims->name, claims->picture);
+    UserRecord user = claimed ? *claimed
+                              : auth::get_or_create_user(state, claims->sub, claims->email,
+                                                         claims->email_verified, claims->name,
+                                                         claims->picture);
     // Этот путь не проходит через auth::authenticate() (нет входящего своего
     // JWT — сам id_token Google верифицируется выше отдельно), поэтому
     // user_id не выставился автоматически — делаем явно, для строки
@@ -459,7 +437,9 @@ void handle_mobile_login(AppState& state, const httplib::Request& req, httplib::
 } // namespace
 
 void register_routes(httplib::Server& svr, AppState& state) {
-    svr.Get("/", handle_index);
+    svr.Get("/", [&state](const httplib::Request& req, httplib::Response& res) {
+        handle_index(state, req, res);
+    });
 
     svr.Get("/auth/google", [&state](const httplib::Request& req, httplib::Response& res) {
         handle_login(state, req, res);

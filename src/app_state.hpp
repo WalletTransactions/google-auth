@@ -20,6 +20,7 @@
 #include <utility>
 #include <vector>
 
+#include "auth_config.hpp"
 #include "db.hpp"
 #include "redis_client.hpp"
 #include "types.hpp"
@@ -81,6 +82,11 @@ struct AppState {
 
     // true только за HTTPS в проде; для http://localhost — false.
     bool cookie_secure = false;
+
+    // Способы входа, регистрация и лимиты попыток входа по паролю
+    // (AUTH_METHODS, REGISTRATION, ALLOW_INSECURE_AUTH, AUTH_FAIL_*,
+    // PASSWORD_PBKDF2_ITERATIONS — см. auth_config.hpp, main.cpp).
+    AuthConfig auth_config;
 
     // TTL access-токена короткий специально: скомпрометированный токен
     // перестаёт работать быстро. Долгая сессия без повторного логина через

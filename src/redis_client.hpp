@@ -104,6 +104,16 @@ public:
     // между двумя просмотрами (now + TTL округлялся бы по-разному).
     std::optional<int64_t> expiretime(const std::string& key);
 
+    // INCR key — атомарно увеличивает целое (ключа нет — считает с 0) и
+    // возвращает новое значение. Срок ключу INCR не ставит — это делает
+    // вызывающий через expire() (см. auth_limits, счётчики неудачных входов).
+    int64_t incr(const std::string& key);
+
+    // TTL key — сколько секунд осталось до истечения. nullopt — ключа нет
+    // (-2); -1 — ключ есть, но без срока (вызывающий должен поставить срок
+    // сам, иначе счётчик не сбросится никогда).
+    std::optional<int64_t> ttl(const std::string& key);
+
 private:
     // nullopt — только для null-bulk-ответа ($-1, "ключа нет"), отличать от
     // пустой строки-значения. SET/EXISTS/DEL никогда не возвращают null-bulk
@@ -119,5 +129,19 @@ private:
     std::intptr_t fd_ = -1;
     std::mutex mutex_;
 };
+
+// Разбор уже прочитанного скалярного ответа — отдельно от сокета, чтобы его
+// можно было проверить юнит-тестом (tests/test_redis_replies.cpp).
+namespace detail {
+
+// Ответ-целое (":42" приходит сюда как "42"). Бросает std::runtime_error на
+// null-bulk и на не-число — INCR/TTL/EXPIRETIME так не отвечают, значит
+// что-то не так с самим ответом.
+int64_t parse_integer(const std::optional<std::string>& reply);
+
+// Ответ TTL/EXPIRETIME: -2 — ключа нет (nullopt), -1 и больше отдаются как есть.
+std::optional<int64_t> parse_ttl(const std::optional<std::string>& reply);
+
+} // namespace detail
 
 } // namespace redis

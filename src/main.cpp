@@ -45,6 +45,7 @@
 #include "telegram.hpp"
 #include "token_exchange.hpp"
 #include "util/crypto.hpp"
+#include "password_auth.hpp"
 #include "util/dotenv.hpp"
 #include "util/log.hpp"
 #include "util/metrics.hpp"
@@ -218,10 +219,58 @@ int main() {
                             version::kGitCommit);
 
     AppState state;
-    state.google_client_id =
-        env_required("GOOGLE_CLIENT_ID", "Client ID из Google Cloud Console");
-    state.google_client_secret =
-        env_required("GOOGLE_CLIENT_SECRET", "Client secret из Google Cloud Console");
+
+    // Способы входа (change add-password-auth). Неверное значение — ошибка
+    // старта с перечнем допустимых: молча работающий не тот режим хуже отказа.
+    {
+        auto methods = parse_auth_methods(env_or("AUTH_METHODS", "both"));
+        if (!methods) {
+            applog::error("AUTH_METHODS должен быть password, google или both, получено: " +
+                          env_or("AUTH_METHODS", "") + " (см. README.md)");
+            return 1;
+        }
+        state.auth_config.methods = *methods;
+        auto registration = parse_registration_open(env_or("REGISTRATION", "open"));
+        if (!registration) {
+            applog::error("REGISTRATION должен быть open или closed, получено: " +
+                          env_or("REGISTRATION", "") + " (см. README.md)");
+            return 1;
+        }
+        state.auth_config.registration_open = *registration;
+        state.auth_config.allow_insecure = env_bool("ALLOW_INSECURE_AUTH", false);
+
+        uint64_t iterations = env_u64("PASSWORD_PBKDF2_ITERATIONS", static_cast<uint64_t>(state.auth_config.pbkdf2_iterations));
+        if (iterations < static_cast<uint64_t>(kMinPbkdf2Iterations) || iterations > 100000000ULL) {
+            applog::error("PASSWORD_PBKDF2_ITERATIONS должен быть от " + std::to_string(kMinPbkdf2Iterations) +
+                          " до 100000000, получено: " + std::to_string(iterations) + " (см. README.md)");
+            return 1;
+        }
+        state.auth_config.pbkdf2_iterations = static_cast<int>(iterations);
+
+        uint64_t max_email = env_u64("AUTH_FAIL_MAX_PER_EMAIL", static_cast<uint64_t>(state.auth_config.fail_max_per_email));
+        uint64_t max_ip = env_u64("AUTH_FAIL_MAX_PER_IP", static_cast<uint64_t>(state.auth_config.fail_max_per_ip));
+        uint64_t window = env_u64("AUTH_FAIL_WINDOW_SECS", state.auth_config.fail_window_secs);
+        if (max_email < 1 || max_ip < 1 || window < 1) {
+            applog::error("AUTH_FAIL_MAX_PER_EMAIL, AUTH_FAIL_MAX_PER_IP и AUTH_FAIL_WINDOW_SECS должны быть положительными "
+                          "целыми (см. README.md)");
+            return 1;
+        }
+        state.auth_config.fail_max_per_email = static_cast<int64_t>(max_email);
+        state.auth_config.fail_max_per_ip = static_cast<int64_t>(max_ip);
+        state.auth_config.fail_window_secs = window;
+    }
+
+    // Клиентские данные Google нужны, только пока вход через Google включён
+    // (AUTH_METHODS=google|both); при password их может не быть вовсе.
+    if (state.auth_config.google_enabled()) {
+        state.google_client_id =
+            env_required("GOOGLE_CLIENT_ID", "Client ID из Google Cloud Console");
+        state.google_client_secret =
+            env_required("GOOGLE_CLIENT_SECRET", "Client secret из Google Cloud Console");
+    } else {
+        state.google_client_id = env_or("GOOGLE_CLIENT_ID", "");
+        state.google_client_secret = env_or("GOOGLE_CLIENT_SECRET", "");
+    }
     state.redirect_url = env_or("REDIRECT_URL", "http://localhost:8080/auth/google/callback");
     // Доп. redirect_uri, выбираемые динамически по Host/X-Forwarded-Host
     // запроса (см. google.cpp::resolve_redirect_uri, README — "Вход и с
@@ -333,6 +382,20 @@ int main() {
         applog::info("token exchange enabled for: " + actors);
     }
 
+    if (state.auth_config.allow_insecure) {
+        // Явное согласие владельца на пароль по HTTP (LAN без TLS) — не молчим об этом.
+        applog::warn("ALLOW_INSECURE_AUTH включён: пароли принимаются и без X-Forwarded-Proto: https — "
+                     "только для сети без TLS",
+                     {{"event", "insecure_auth_enabled"}});
+    }
+    {
+        std::string methods;
+        for (const auto& m : enabled_method_names(state.auth_config)) methods += (methods.empty() ? "" : ",") + m;
+        applog::info("auth methods: " + methods + ", registration " +
+                         (state.auth_config.registration_open ? "open" : "closed"),
+                     {{"event", "auth_methods"}});
+    }
+
     std::string host = env_or("HOST", "127.0.0.1");
     int port = std::stoi(env_or("PORT", "8080"));
 
@@ -340,6 +403,7 @@ int main() {
     svr.set_pre_routing_handler(handle_pre_routing);
     google_auth::register_routes(svr, state);
     auth::register_routes(svr, state);
+    password_auth::register_routes(svr, state);
     admin::register_routes(svr, state);
     devices::register_routes(svr, state);
     telegram::register_routes(svr, state);
@@ -405,9 +469,17 @@ int main() {
         // MCP-токен (90 дней чтения отчётов), обмен — JWT (/internal/*;
         // в т.ч. /internal/token/exchange: subject_token в запросе,
         // access_token в ответе).
+        //
+        // Пароли (change add-password-auth): тела /auth/login, /auth/register,
+        // /auth/password и /admin/users/<id>/password несут пароль в запросе, а
+        // ответ мобильного /auth/login — пару токенов, поэтому тоже скрыты.
+        bool admin_password = req.path.rfind("/admin/users/", 0) == 0 && req.path.size() > 9 &&
+                              req.path.compare(req.path.size() - 9, 9, "/password") == 0;
         bool secret_body = req.path.rfind("/internal/", 0) == 0 || req.path == "/auth/telegram/link-code" ||
                            req.path == "/auth/refresh" || req.path == "/auth/logout" ||
-                           req.path == "/auth/google/mobile" || req.path == "/auth/mcp-tokens";
+                           req.path == "/auth/google/mobile" || req.path == "/auth/mcp-tokens" ||
+                           req.path == "/auth/login" || req.path == "/auth/register" ||
+                           req.path == "/auth/password" || admin_password;
         applog::debug(req.method + " " + req.path,
                       {{"event", "request_body"},
                        {"request_body", secret_body ? std::string("(скрыто: секреты)") : truncate_body(req.body)},
