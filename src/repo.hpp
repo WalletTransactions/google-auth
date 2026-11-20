@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "db.hpp"
+#include "passwords.hpp"
 #include "redis_client.hpp"
 #include "types.hpp"
 
@@ -27,6 +28,52 @@ UserRecord upsert_user(db::Database& db, const std::string& google_sub, const st
 
 std::optional<UserRecord> find_user_by_id(db::Database& db, const std::string& id);
 std::optional<UserRecord> find_user_by_google_sub(db::Database& db, const std::string& google_sub);
+
+// ---- Вход по паролю (change add-password-auth, таблица user_passwords) ----
+// Email сюда приходит уже нормализованным (passwords::normalize_email), но
+// поиск всё равно идёт по lower(email): у пользователей, заведённых через
+// Google, email хранится как прислал Google.
+
+// Пользователь по email. Если у адреса несколько записей (исторически
+// допустимо для Google-пользователей с разными sub), берётся та, у которой
+// есть пароль, затем самая старая — вход и регистрация видят один и тот же
+// аккаунт. nullopt — адрес свободен.
+std::optional<UserRecord> find_user_by_email(db::Database& db, const std::string& email);
+
+// Пароль пользователя. nullopt — у него пароля нет (только Google).
+std::optional<passwords::Record> find_password(db::Database& db, const std::string& user_id);
+
+// Заводит пользователя только с паролем: email_verified=false, роль user,
+// без google_sub, last_login_at пуст (входа ещё не было). Атомарно: если email
+// уже занят — любым пользователем, в том числе Google, — ничего не создаёт и
+// возвращает nullopt (одинаковое поведение для register, спека password-auth).
+std::optional<UserRecord> create_password_user(db::Database& db, const std::string& email,
+                                               const std::string& name,
+                                               const passwords::Record& record);
+
+// Устанавливает или заменяет пароль (UPSERT по user_id), updated_at = now().
+void set_password(db::Database& db, const std::string& user_id, const passwords::Record& record);
+
+// Удаляет пароль. Не ошибка, если его не было.
+void delete_password(db::Database& db, const std::string& user_id);
+
+// Неподтверждённая парольная учётная запись с этим email (email_verified=false
+// и нет google_sub) — кандидат на «Google забирает аккаунт». nullopt — такой нет.
+std::optional<UserRecord> find_unverified_password_user(db::Database& db, const std::string& email);
+
+// Привязывает Google к парольной учётной записи одним запросом: google_sub,
+// email_verified=true, имя/аватар из Google, last_login_at = now(), пароль
+// удаляется. Условие (нет google_sub, email_verified=false) проверяется в
+// самом UPDATE, поэтому параллельный вход не привяжет аккаунт дважды.
+// nullopt — учётная запись уже не подходит (привязана или подтверждена).
+// Роль не меняется (спека password-auth): неподтверждённая парольная запись
+// всегда «user», и повышать её по ADMIN_EMAILS при привязке нельзя.
+std::optional<UserRecord> link_google_sub(db::Database& db, const std::string& user_id,
+                                          const std::string& google_sub, const std::string& name,
+                                          const std::string& picture);
+
+// Фиксирует успешный вход по паролю: users.last_login_at = now().
+void touch_last_login(db::Database& db, const std::string& user_id);
 
 // Жёсткое удаление — самообслуживание (см. DELETE /auth/me, auth.cpp) и,
 // возможно позже, админ-инструмент. На users ссылается только

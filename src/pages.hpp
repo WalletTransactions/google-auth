@@ -16,11 +16,16 @@
 
 #include <string>
 
+#include "auth_config.hpp"
 #include "types.hpp"
 
 namespace pages {
 
-std::string index();
+// Стартовая страница GET /: ссылки на включённые способы входа (AUTH_METHODS).
+// Кнопка Google — при google|both; подсказка про вход по паролю
+// (POST /auth/login) — при password|both. Через гейтвей "/" обслуживает
+// wallet-web, поэтому страница видна только при прямом обращении к сервису.
+std::string index(const AuthConfig& config);
 
 std::string error(const std::string& message);
 

@@ -3,6 +3,7 @@
 #include <algorithm>
 
 #include "nlohmann/json.hpp"
+#include "util/hex.hpp"
 #include "util/time.hpp"
 #include "util/uuid.hpp"
 
@@ -79,6 +80,118 @@ std::optional<UserRecord> find_user_by_google_sub(db::Database& db, const std::s
 
 void delete_user(db::Database& db, const std::string& id) {
     db.exec("DELETE FROM users WHERE id = $1", {id});
+}
+
+namespace {
+
+constexpr const char* kUserColumns =
+    "id, google_sub, email, email_verified, name, picture, role_id, created_at, last_login_at";
+
+// Те же колонки с префиксом таблицы — для запросов, где users соединён с
+// чем-то ещё или используется под алиасом.
+constexpr const char* kUserColumnsU =
+    "u.id, u.google_sub, u.email, u.email_verified, u.name, u.picture, u.role_id, u.created_at, "
+    "u.last_login_at";
+
+} // namespace
+
+std::optional<UserRecord> find_user_by_email(db::Database& db, const std::string& email) {
+    auto res = db.exec(std::string("SELECT ") + kUserColumnsU +
+                           " FROM users u WHERE lower(u.email) = lower($1) "
+                           "ORDER BY EXISTS (SELECT 1 FROM user_passwords p WHERE p.user_id = u.id) DESC, "
+                           "u.created_at, u.id LIMIT 1",
+                       {email});
+    if (res.rows.empty()) return std::nullopt;
+    return row_to_user(res.rows[0]);
+}
+
+std::optional<passwords::Record> find_password(db::Database& db, const std::string& user_id) {
+    // BYTEA в текстовом режиме libpq приходит как '\x…' — берём hex через
+    // encode(), чтобы не разбирать escape-формат.
+    auto res = db.exec(
+        "SELECT algo, encode(salt, 'hex'), iterations, encode(hash, 'hex') "
+        "FROM user_passwords WHERE user_id = $1",
+        {user_id});
+    if (res.rows.empty()) return std::nullopt;
+    const auto& f = res.rows[0].fields;
+    passwords::Record r;
+    r.algo = f.at(0);
+    r.salt = hex::decode(f.at(1));
+    r.iterations = std::stoi(f.at(2));
+    r.hash = hex::decode(f.at(3));
+    return r;
+}
+
+std::optional<UserRecord> create_password_user(db::Database& db, const std::string& email,
+                                               const std::string& name,
+                                               const passwords::Record& record) {
+    // Одним запросом: пользователь вставляется, только если email свободен
+    // (в том числе у Google-пользователей), и тут же получает пароль. Гонку
+    // двух регистраций одного адреса закрывает частичный уникальный индекс
+    // users_password_email_uniq (ON CONFLICT DO NOTHING — второй получает 0 строк).
+    auto res = db.exec(
+        "WITH u AS ("
+        "  INSERT INTO users (id, google_sub, email, email_verified, name, picture, role_id) "
+        "  SELECT $1::uuid, NULL, $2::text, false, $3::text, '', 1 "
+        "  WHERE NOT EXISTS (SELECT 1 FROM users WHERE lower(email) = lower($2)) "
+        "  ON CONFLICT DO NOTHING "
+        "  RETURNING id) "
+        "INSERT INTO user_passwords (user_id, algo, salt, iterations, hash) "
+        "SELECT id, $4::text, decode($5::text, 'hex'), $6::int, decode($7::text, 'hex') FROM u "
+        "RETURNING user_id::text",
+        {uuidgen::v4(), email, name, record.algo, hex::encode(record.salt),
+         std::to_string(record.iterations), hex::encode(record.hash)},
+        {"", "", "", "", "secret", "", "secret"});
+    if (res.rows.empty()) return std::nullopt;
+    return find_user_by_id(db, res.rows[0].fields.at(0));
+}
+
+void set_password(db::Database& db, const std::string& user_id, const passwords::Record& record) {
+    db.exec(
+        "INSERT INTO user_passwords (user_id, algo, salt, iterations, hash, updated_at) "
+        "VALUES ($1, $2, decode($3, 'hex'), $4, decode($5, 'hex'), now()) "
+        "ON CONFLICT (user_id) DO UPDATE SET algo = EXCLUDED.algo, salt = EXCLUDED.salt, "
+        "iterations = EXCLUDED.iterations, hash = EXCLUDED.hash, updated_at = now()",
+        {user_id, record.algo, hex::encode(record.salt), std::to_string(record.iterations),
+         hex::encode(record.hash)},
+        {"", "", "secret", "", "secret"});
+}
+
+void delete_password(db::Database& db, const std::string& user_id) {
+    db.exec("DELETE FROM user_passwords WHERE user_id = $1", {user_id});
+}
+
+std::optional<UserRecord> find_unverified_password_user(db::Database& db, const std::string& email) {
+    auto res = db.exec(std::string("SELECT ") + kUserColumns +
+                           " FROM users WHERE lower(email) = lower($1) "
+                           "AND google_sub IS NULL AND email_verified = false "
+                           "ORDER BY created_at, id LIMIT 1",
+                       {email});
+    if (res.rows.empty()) return std::nullopt;
+    return row_to_user(res.rows[0]);
+}
+
+std::optional<UserRecord> link_google_sub(db::Database& db, const std::string& user_id,
+                                          const std::string& google_sub, const std::string& name,
+                                          const std::string& picture) {
+    // Пароль удаляется тем же запросом (CTE): аккаунт не остаётся и с Google,
+    // и с паролем злоумышленника. Условие в WHERE — защита от гонки: вторая
+    // привязка или подтверждение email между поиском и UPDATE даёт 0 строк.
+    auto res = db.exec(
+        "WITH gone AS (DELETE FROM user_passwords WHERE user_id = $1 "
+        "              AND EXISTS (SELECT 1 FROM users WHERE id = $1 AND google_sub IS NULL "
+        "                          AND email_verified = false)) "
+        "UPDATE users SET google_sub = $2, email_verified = true, "
+        "  name = CASE WHEN $3 = '' THEN name ELSE $3 END, picture = $4, last_login_at = now() "
+        "WHERE id = $1 AND google_sub IS NULL AND email_verified = false "
+        "RETURNING id, google_sub, email, email_verified, name, picture, role_id, created_at, last_login_at",
+        {user_id, google_sub, name, picture});
+    if (res.rows.empty()) return std::nullopt;
+    return row_to_user(res.rows[0]);
+}
+
+void touch_last_login(db::Database& db, const std::string& user_id) {
+    db.exec("UPDATE users SET last_login_at = now() WHERE id = $1 RETURNING id", {user_id});
 }
 
 namespace {

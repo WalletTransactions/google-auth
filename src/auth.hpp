@@ -60,6 +60,19 @@ UserRecord get_or_create_user(AppState& state, const std::string& google_sub,
                                const std::string& email, bool email_verified,
                                const std::string& name, const std::string& picture);
 
+// Google забирает неподтверждённый парольный аккаунт (change add-password-auth,
+// спека password-auth): вход через Google с email_verified=true и email,
+// совпадающим с неподтверждённой учётной записью без google_sub. К ней
+// привязывается google_sub, email становится подтверждённым, пароль удаляется,
+// все её сессии отзываются — после этого вызывающий код выпускает новую сессию.
+// nullopt — забирать нечего (email не подтверждён Google, нет такой записи,
+// либо этот google_sub уже принадлежит другому пользователю); тогда вход идёт
+// по обычным правилам Google. Идентичность (users.id) сохраняется, поэтому
+// данные кошелька в wallet-api остаются на месте.
+std::optional<UserRecord> claim_password_account(AppState& state, const std::string& google_sub,
+                                                 const std::string& email, bool email_verified,
+                                                 const std::string& name, const std::string& picture);
+
 struct TokenPair {
     std::string access_token;
     std::string refresh_token;

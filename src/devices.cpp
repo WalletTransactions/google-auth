@@ -191,6 +191,13 @@ void handle_revoke_others(AppState& state, const httplib::Request& req, httplib:
 
 } // namespace
 
+int revoke_other_sessions(AppState& state, const httplib::Request& req, const auth::AuthUser& user) {
+    CurrentSession current = resolve_current_session(req, user);
+    // is_current при known=false всегда false — тогда отзываются все сессии.
+    return repo::revoke_user_sessions_if(
+        *state.redis, user.user_id, [&](const repo::SessionSummary& s) { return !is_current(s, current); });
+}
+
 void register_routes(httplib::Server& svr, AppState& state) {
     svr.Get("/auth/devices", [&state](const httplib::Request& req, httplib::Response& res) {
         handle_list(state, req, res);

@@ -162,6 +162,37 @@ UserRecord get_or_create_user(AppState& state, const std::string& google_sub,
                               role);
 }
 
+std::optional<UserRecord> claim_password_account(AppState& state, const std::string& google_sub,
+                                                 const std::string& email, bool email_verified,
+                                                 const std::string& name, const std::string& picture) {
+    // Только подтверждённый Google email может забрать чужую неподтверждённую
+    // запись: без этого любой Google-аккаунт с чужим непроверенным адресом
+    // увёл бы аккаунт (см. design D5).
+    if (!email_verified || email.empty()) return std::nullopt;
+
+    auto lease = state.db_pool->acquire();
+    // Этот google_sub уже привязан к другому пользователю — привязка нарушила бы
+    // UNIQUE(google_sub); обычный вход по sub этим случаем и займётся.
+    if (repo::find_user_by_google_sub(*lease, google_sub)) return std::nullopt;
+
+    auto candidate = repo::find_unverified_password_user(*lease, email);
+    if (!candidate) return std::nullopt;
+
+    // Роль записи не меняется (спека password-auth): созданная по паролю, она
+    // «user», и повышение по ADMIN_EMAILS при привязке не делается.
+    auto linked = repo::link_google_sub(*lease, candidate->id, google_sub, name, picture);
+    if (!linked) return std::nullopt; // кто-то успел раньше (гонка) — аккаунт уже не подходит
+
+    // Пароль удалён самим link_google_sub; теперь гасим уже выданные сессии
+    // (в том числе MCP-токены) — иначе захватчик продолжил бы пользоваться ими.
+    repo::revoke_all_user_tokens(*state.redis, linked->id);
+    applog::warn("password account claimed by google",
+                 {{"event", "password_claimed_by_google"}, {"user_id", linked->id}});
+    metrics::inc_counter("password_auth_total", "События входа и регистрации по паролю по результату.",
+                         "outcome", "claimed_by_google");
+    return linked;
+}
+
 TokenPair issue_tokens(AppState& state, const UserRecord& user, const DeviceInfo& device) {
     TokenPair pair;
     pair.access_token =

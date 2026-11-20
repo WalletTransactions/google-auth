@@ -12,9 +12,18 @@
 #pragma once
 
 #include "app_state.hpp"
+#include "auth.hpp"
 #include "httplib.h"
 
 namespace devices {
+
+// Отзывает все сессии пользователя (refresh и MCP-токены), кроме той, из
+// которой пришёл запрос — после смены пароля. «Текущая» определяется так же,
+// как на экране устройств: по refresh-токену запроса, иначе по device_id из
+// access-JWT. Если определить её нечем, отзываются все сессии, включая
+// вызывающую: безопаснее выйти самому, чем оставить чужую сессию живой.
+// Возвращает число отозванных refresh-сессий.
+int revoke_other_sessions(AppState& state, const httplib::Request& req, const auth::AuthUser& user);
 
 void register_routes(httplib::Server& svr, AppState& state);
 

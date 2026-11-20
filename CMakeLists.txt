@@ -82,7 +82,13 @@ add_executable(google_auth
     src/db.cpp
     src/redis_client.cpp
     src/repo.cpp
+    src/passwords.cpp
+    src/password_auth.cpp
+    src/auth_config.cpp
+    src/auth_limits.cpp
+    src/request_info.cpp
     ${WALLET_COMMON_DIR}/util/base64.cpp
+    ${WALLET_COMMON_DIR}/util/hex.cpp
     ${WALLET_COMMON_DIR}/util/crypto.cpp
     ${WALLET_COMMON_DIR}/util/jwt.cpp
     ${WALLET_COMMON_DIR}/util/jwt_claims.cpp
