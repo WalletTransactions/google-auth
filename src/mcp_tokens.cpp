@@ -161,6 +161,9 @@ void handle_issue(AppState& state, const httplib::Request& req, httplib::Respons
 // различаются (только в журнале, без токена и его хэша).
 void handle_exchange(AppState& state, const httplib::Request& req, httplib::Response& res) {
     applog::set_route("POST /internal/mcp/token"); // литерал из register_routes ниже
+    // Секрета здесь нет (проверяется сам wmcp_-токен), поэтому сертификат — единственная
+    // проверка вызывающего сервиса (add-internal-mtls, D4).
+    if (!internal_identity::check_rights(state.internal_identity, req, res)) return;
 
     std::string audience_label = "invalid";
     auto reject = [&res, &audience_label](const char* reason) {

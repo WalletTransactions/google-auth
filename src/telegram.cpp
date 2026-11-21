@@ -109,6 +109,8 @@ void handle_link_code(AppState& state, const httplib::Request& req, httplib::Res
 // Аутентификация бота на /internal/telegram/* — общий секрет. false — уже
 // ответили (503: выключено, 401: неверный секрет).
 bool authenticate_bot(AppState& state, const httplib::Request& req, httplib::Response& res) {
+    // Идентичность по сертификату — ДО секрета: чужой сервис не узнаёт, верен ли секрет.
+    if (!internal_identity::check_rights(state.internal_identity, req, res)) return false;
     // Секрет не задан — эндпоинт выключен целиком, а не открыт всем.
     if (state.telegram_service_secret.empty()) {
         send_error(res, 503, "Telegram-бот выключен (TELEGRAM_SERVICE_SECRET)");

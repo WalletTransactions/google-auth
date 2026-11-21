@@ -77,6 +77,7 @@ add_executable(google_auth
     src/telegram.cpp
     src/mcp_tokens.cpp
     src/token_exchange.cpp
+    src/internal_identity.cpp
     src/pages.cpp
     src/docs.cpp
     src/db.cpp
@@ -87,6 +88,7 @@ add_executable(google_auth
     src/auth_config.cpp
     src/auth_limits.cpp
     src/request_info.cpp
+    ${WALLET_COMMON_DIR}/net/tls.cpp
     ${WALLET_COMMON_DIR}/util/base64.cpp
     ${WALLET_COMMON_DIR}/util/hex.cpp
     ${WALLET_COMMON_DIR}/util/crypto.cpp

@@ -22,6 +22,7 @@
 
 #include "auth_config.hpp"
 #include "db.hpp"
+#include "internal_identity.hpp"
 #include "redis_client.hpp"
 #include "types.hpp"
 #include "util/crypto.hpp"
@@ -148,4 +149,8 @@ struct AppState {
     // пары (actor, секрет) из TOKEN_EXCHANGE_SECRETS. Пусто — эндпоинт
     // выключен (503), а не открыт всем.
     std::vector<std::pair<std::string, std::string>> token_exchange_secrets;
+
+    // Проверка идентичности вызывающего на /internal/* по клиентскому сертификату
+    // (INTERNAL_IDENTITY, internal_identity.hpp). По умолчанию выключена.
+    internal_identity::Config internal_identity;
 };

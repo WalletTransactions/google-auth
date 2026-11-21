@@ -32,6 +32,7 @@ add_executable(google_auth_tests
     test_auth_limits.cpp
     test_password_claim_it.cpp
     test_net_tls.cpp
+    test_internal_identity.cpp
 
     ${CMAKE_SOURCE_DIR}/src/passwords.cpp
     ${CMAKE_SOURCE_DIR}/src/auth_config.cpp
@@ -41,6 +42,7 @@ add_executable(google_auth_tests
     ${CMAKE_SOURCE_DIR}/src/telegram.cpp
     ${CMAKE_SOURCE_DIR}/src/mcp_tokens.cpp
     ${CMAKE_SOURCE_DIR}/src/token_exchange.cpp
+    ${CMAKE_SOURCE_DIR}/src/internal_identity.cpp
     ${CMAKE_SOURCE_DIR}/src/repo.cpp
     ${CMAKE_SOURCE_DIR}/src/db.cpp
     ${CMAKE_SOURCE_DIR}/src/redis_client.cpp

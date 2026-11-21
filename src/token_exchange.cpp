@@ -164,6 +164,9 @@ void handle_exchange(AppState& state, const httplib::Request& req, httplib::Resp
     res.set_header("Cache-Control", "no-store");
     res.set_header("Pragma", "no-cache");
 
+    // Идентичность по сертификату — до секрета (add-internal-mtls, D4, D12).
+    if (!internal_identity::check_rights(state.internal_identity, req, res)) return;
+
     std::string actor_label = kNoActor;
     std::string audience;
     std::string sub;
@@ -198,6 +201,8 @@ void handle_exchange(AppState& state, const httplib::Request& req, httplib::Resp
         return;
     }
     actor_label = actor;
+    // CN сертификата обязан совпасть с actor по секрету (чужой секрет с чужим сертификатом).
+    if (!internal_identity::check_actor(state.internal_identity, req, res, actor)) return;
 
     std::string content_type = req.get_header_value("Content-Type");
     std::optional<httplib::Params> form;

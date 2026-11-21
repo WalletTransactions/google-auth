@@ -32,6 +32,7 @@
 #include <string>
 #include <thread>
 #include <unordered_set>
+#include <vector>
 
 #include "admin.hpp"
 #include "app_state.hpp"
@@ -41,7 +42,9 @@
 #include "docs.hpp"
 #include "google.hpp"
 #include "httplib.h"
+#include "internal_identity.hpp"
 #include "mcp_tokens.hpp"
+#include "net/tls.hpp"
 #include "redis_client.hpp"
 #include "telegram.hpp"
 #include "token_exchange.hpp"
@@ -496,27 +499,69 @@ int main() {
     // compose это алиас google-auth в сети auth-internal, чтобы порт не слушал
     // интерфейс общей сети контура, иначе сегментация ничего не даёт.
     // Пока /internal/* остаётся и на публичном порту (шаг 6.1).
-    httplib::Server internal_svr;
-    std::thread internal_thread;
+    // Идентичность вызывающего по сертификату (INTERNAL_IDENTITY, internal_identity.hpp):
+    // ошибка в значении — ошибка старта, молча выключенная проверка хуже отказа.
+    {
+        std::string err;
+        auto cfg = internal_identity::parse_config(env_or("INTERNAL_IDENTITY", ""), &err);
+        if (!cfg) {
+            applog::error(err + " (см. README.md, «Служебный порт»)");
+            return 1;
+        }
+        state.internal_identity = *cfg;
+        applog::info("internal identity: default " + std::string(internal_identity::mode_name(cfg->default_mode)) +
+                     ", групп с отдельным режимом: " + std::to_string(cfg->by_group.size()));
+    }
+
+    // Два служебных слушателя (по одному на состояние D12):
+    //   INTERNAL_PORT     — обычный HTTP, на переходе (клиенты переносятся по одному);
+    //   INTERNAL_TLS_PORT — mTLS (TLS_CERT, TLS_KEY, TLS_CA), клиентский сертификат обязателен.
+    // Оба слушают INTERNAL_HOST. Пока /internal/* остаётся и на публичном порту (шаг 6.1).
+    std::vector<std::unique_ptr<httplib::Server>> internal_servers;
+    std::vector<std::thread> internal_threads;
     int internal_port = std::stoi(env_or("INTERNAL_PORT", "0"));
+    int internal_tls_port = std::stoi(env_or("INTERNAL_TLS_PORT", "0"));
     std::string internal_host = env_or("INTERNAL_HOST", host);
-    if (internal_port != 0) {
-        if (internal_port == port) {
-            applog::error("INTERNAL_PORT совпадает с PORT (" + std::to_string(port) + ")");
+    auto tls_loaded = nettls::config_from_env();
+    if (!tls_loaded.error.empty()) {
+        applog::error(tls_loaded.error);
+        return 1;
+    }
+    auto start_internal = [&](std::unique_ptr<httplib::Server> server, int p, const char* kind) -> bool {
+        if (!server) return false;
+        if (p == port || (internal_port != 0 && internal_tls_port != 0 && internal_port == internal_tls_port)) {
+            applog::error(std::string("служебный порт ") + std::to_string(p) + " совпадает с другим портом сервиса");
+            return false;
+        }
+        server->set_pre_routing_handler(handle_pre_routing);
+        telegram::register_internal_routes(*server, state);
+        mcp_tokens::register_internal_routes(*server, state);
+        token_exchange::register_internal_routes(*server, state);
+        server->set_logger(access_logger);
+        if (!server->bind_to_port(internal_host, p)) {
+            applog::error("не удалось занять служебный порт " + internal_host + ":" + std::to_string(p));
+            return false;
+        }
+        httplib::Server* raw = server.get();
+        internal_threads.emplace_back([raw] { raw->listen_after_bind(); });
+        internal_servers.push_back(std::move(server));
+        applog::info(std::string("служебный порт (только /internal/*, ") + kind + "): " + internal_host + ":" +
+                     std::to_string(p));
+        return true;
+    };
+    if (internal_port != 0 && !start_internal(std::make_unique<httplib::Server>(), internal_port, "http")) return 1;
+    if (internal_tls_port != 0) {
+        if (!tls_loaded.config.enabled()) {
+            applog::error("INTERNAL_TLS_PORT задан, но не заданы TLS_CERT, TLS_KEY, TLS_CA");
             return 1;
         }
-        internal_svr.set_pre_routing_handler(handle_pre_routing);
-        telegram::register_internal_routes(internal_svr, state);
-        mcp_tokens::register_internal_routes(internal_svr, state);
-        token_exchange::register_internal_routes(internal_svr, state);
-        internal_svr.set_logger(access_logger);
-        if (!internal_svr.bind_to_port(internal_host, internal_port)) {
-            applog::error("не удалось занять служебный порт " + internal_host + ":" + std::to_string(internal_port));
+        std::string err;
+        auto tls_server = nettls::make_server(tls_loaded.config, &err);
+        if (!tls_server) {
+            applog::error(err);
             return 1;
         }
-        internal_thread = std::thread([&internal_svr] { internal_svr.listen_after_bind(); });
-        applog::info("служебный порт (только /internal/*): http://" + internal_host + ":" +
-                     std::to_string(internal_port));
+        if (!start_internal(std::move(tls_server), internal_tls_port, "mTLS")) return 1;
     }
 
     applog::info("google-auth v" + std::string(version::kBuild) + " (" +
@@ -528,9 +573,9 @@ int main() {
         applog::error("не удалось запустить сервер на " + host + ":" + std::to_string(port) +
                       " (порт занят или недоступен?)");
     }
-    if (internal_thread.joinable()) {
-        internal_svr.stop();
-        internal_thread.join();
+    for (auto& server : internal_servers) server->stop();
+    for (auto& t : internal_threads) {
+        if (t.joinable()) t.join();
     }
     return ok ? 0 : 1;
 }

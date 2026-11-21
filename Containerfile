@@ -85,6 +85,10 @@ COPY migrations/ /migrations/
 # раздел "Логирование") — это и есть ожидаемое поведение в контейнере.
 # JWT_RSA_PRIVATE_KEY_PATH указывает на файл, который нужно смонтировать
 # отдельно (см. compose.yaml) — приватный ключ в образ не кладём.
+# Метка поддержки взаимного TLS (change add-internal-mtls, design D8): up.sh и
+# deploy.sh при включённом режиме отказываются выкатывать образ без неё.
+LABEL org.wallet.mtls="1"
+
 USER appuser
 EXPOSE 8080
 
