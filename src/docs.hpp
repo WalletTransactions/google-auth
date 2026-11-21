@@ -21,6 +21,11 @@
 
 namespace docsapi {
 
-void register_routes(httplib::Server& svr);
+// with_service_routes=false — /healthz и /metrics не регистрируются (их отдаёт служебный mTLS-слушатель,
+// SERVICE_MTLS_PORT; change add-internal-mtls, задача 8.3); /version остаётся публичным.
+void register_routes(httplib::Server& svr, bool with_service_routes = true);
+
+// Только /healthz, /metrics и /version — для служебного mTLS-слушателя.
+void register_service_routes(httplib::Server& svr);
 
 } // namespace docsapi
