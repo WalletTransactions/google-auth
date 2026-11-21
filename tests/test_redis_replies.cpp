@@ -82,3 +82,18 @@ TEST(it_redis_incr_expire_ttl) {
     r->del(key);
     CHECK(!r->ttl(key).has_value());
 }
+
+TEST(redis_auth_command_without_user_is_password_only) {
+    auto cmd = redis::detail::auth_command("", "s3cret");
+    CHECK_EQ(cmd.size(), static_cast<size_t>(2));
+    CHECK_EQ(cmd[0], std::string("AUTH"));
+    CHECK_EQ(cmd[1], std::string("s3cret"));
+}
+
+TEST(redis_auth_command_with_user_puts_user_first) {
+    auto cmd = redis::detail::auth_command("google-auth", "s3cret");
+    CHECK_EQ(cmd.size(), static_cast<size_t>(3));
+    CHECK_EQ(cmd[0], std::string("AUTH"));
+    CHECK_EQ(cmd[1], std::string("google-auth"));
+    CHECK_EQ(cmd[2], std::string("s3cret"));
+}
