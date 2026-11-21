@@ -754,6 +754,33 @@ Change `add-internal-mtls` (wallet-infra, D11). `INTERNAL_PORT` (по умолч
 интерфейс, и контейнеры общей сети контура (wallet-api, гейтвей) его не
 достают. Привязка к `0.0.0.0` сегментацию не даёт.
 
+**mTLS на служебном порту (`INTERNAL_TLS_PORT`).** Третий слушатель, по умолчанию
+выключен: `/internal/*` по взаимному TLS (`TLS_CERT`, `TLS_KEY`, `TLS_CA` — сертификат
+сервиса и корень CA контура, см. `wallet-infra/infra/env/README.md`, «mTLS внутри
+контура»). Клиентский сертификат обязателен, рукопожатие без него не завершается.
+Слушатели `INTERNAL_PORT` (обычный HTTP) и `INTERNAL_TLS_PORT` работают одновременно:
+клиенты переносятся на TLS по одному.
+
+**Идентичность по сертификату (`INTERNAL_IDENTITY`).** CN сертификата — имя
+вызвавшего сервиса. Режим задаётся на каждую группу ручек: `telegram`
+(`/internal/telegram/*`), `mcp-token` (`/internal/mcp/token`), `exchange`
+(`/internal/token/exchange`). Значение — режим по умолчанию первым элементом и
+исключения: `observe,telegram=enforce`.
+
+| Режим | Поведение |
+| --- | --- |
+| `off` (по умолчанию) | проверок нет |
+| `observe` | запрос принимается; нет сертификата, сервис не из списка, CN не равен actor по секрету — в журнал (`event: internal_identity`) и метрику `internal_identity_total{finding="<группа>.<результат>"}` |
+| `enforce-tls` | 403 при отсутствии сертификата и при CN ≠ actor |
+| `enforce` | то же, и 403, если CN не в списке разрешённых для группы |
+
+Список разрешённых (`internal_identity.cpp`): `telegram` — `wallet-telegram`;
+`mcp-token` — `wallet-mcp`, `wallet-ai`; `exchange` — `wallet-mcp`, `wallet-ai`,
+`wallet-telegram`. Проверка идёт до секрета; значение секрета в журнал не попадает.
+`/internal/mcp/token` секрета не имеет — там сертификат единственная проверка
+вызывающего сервиса. Откат — значение `observe` или `off` и перезапуск, токены
+пользователей не затрагиваются.
+
 На переходе `/internal/*` остаётся и на публичном `PORT` — клиенты (wallet-telegram,
 wallet-mcp, wallet-ai) переводятся на служебный адрес по одному через
 `AUTH_INTERNAL_URL`; публичный путь убирается последним шагом миграции.
