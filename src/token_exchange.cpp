@@ -284,9 +284,9 @@ void register_internal_routes(httplib::Server& svr, AppState& state) {
     });
 }
 
-void register_routes(httplib::Server& svr, AppState& state) {
-    // Переходный период (add-internal-mtls, D11): /internal/* пока и на публичном порту.
-    register_internal_routes(svr, state);
+void register_routes(httplib::Server& svr, AppState& state, bool with_internal) {
+    // Только служебная ручка: на публичном порту её нет, когда with_internal=false.
+    if (with_internal) register_internal_routes(svr, state);
 }
 
 } // namespace token_exchange

@@ -410,9 +410,26 @@ int main() {
     password_auth::register_routes(svr, state);
     admin::register_routes(svr, state);
     devices::register_routes(svr, state);
-    telegram::register_routes(svr, state);
-    mcp_tokens::register_routes(svr, state);
-    token_exchange::register_routes(svr, state);
+    // /internal/* на публичном порту: по умолчанию есть (клиенты без служебного порта ходят
+    // сюда). INTERNAL_ON_PUBLIC_PORT=false — убрать (ответ 404), когда все клиенты на служебном
+    // порту (change add-internal-mtls, задача 6.1); без INTERNAL_PORT и INTERNAL_TLS_PORT
+    // /internal/* не осталось бы нигде, поэтому такое сочетание — ошибка старта.
+    std::string on_public = env_or("INTERNAL_ON_PUBLIC_PORT", "true");
+    if (on_public != "true" && on_public != "false") {
+        applog::error("INTERNAL_ON_PUBLIC_PORT должен быть true или false, получено: " + on_public);
+        return 1;
+    }
+    bool internal_on_public = on_public == "true";
+    if (!internal_on_public && std::stoi(env_or("INTERNAL_PORT", "0")) == 0 &&
+        std::stoi(env_or("INTERNAL_TLS_PORT", "0")) == 0) {
+        applog::error("INTERNAL_ON_PUBLIC_PORT=false, но не задан ни INTERNAL_PORT, ни INTERNAL_TLS_PORT: "
+                      "/internal/* не осталось бы нигде");
+        return 1;
+    }
+    telegram::register_routes(svr, state, internal_on_public);
+    mcp_tokens::register_routes(svr, state, internal_on_public);
+    token_exchange::register_routes(svr, state, internal_on_public);
+    if (!internal_on_public) applog::info("/internal/* на публичном порту закрыты (INTERNAL_ON_PUBLIC_PORT=false)");
     docsapi::register_routes(svr); // GET /openapi.yaml, /docs, /healthz, статика /vendor/swagger-ui/*
 
     // Access-лог: одна строка на запрос (метод, путь, статус ответа). Ещё на

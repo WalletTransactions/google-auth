@@ -332,12 +332,13 @@ void register_internal_routes(httplib::Server& svr, AppState& state) {
     });
 }
 
-void register_routes(httplib::Server& svr, AppState& state) {
+void register_routes(httplib::Server& svr, AppState& state, bool with_internal) {
     svr.Post("/auth/telegram/link-code", [&state](const httplib::Request& req, httplib::Response& res) {
         handle_link_code(state, req, res);
     });
-    // Переходный период (add-internal-mtls, D11): /internal/* пока и на публичном порту.
-    register_internal_routes(svr, state);
+    // Переходный период (add-internal-mtls, D11): /internal/* на публичном порту, пока не
+    // закрыт настройкой INTERNAL_ON_PUBLIC_PORT=false.
+    if (with_internal) register_internal_routes(svr, state);
     svr.Get("/auth/telegram/links", [&state](const httplib::Request& req, httplib::Response& res) {
         handle_list_links(state, req, res);
     });

@@ -33,7 +33,9 @@ namespace telegram {
 // на переходе регистрирует их тоже.
 void register_internal_routes(httplib::Server& svr, AppState& state);
 
-void register_routes(httplib::Server& svr, AppState& state);
+// with_internal=false — /internal/* на этом сервере не регистрируются (публичный порт после
+// закрытия служебных ручек, INTERNAL_ON_PUBLIC_PORT=false; add-internal-mtls, задача 6.1).
+void register_routes(httplib::Server& svr, AppState& state, bool with_internal = true);
 
 // Чистые помощники — в заголовке ради юнит-тестов (tests/test_telegram.cpp).
 namespace detail {

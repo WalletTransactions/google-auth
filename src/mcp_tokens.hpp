@@ -36,7 +36,9 @@ inline constexpr std::size_t kMaxTokensPerUser = 10;
 // на переходе регистрирует их тоже.
 void register_internal_routes(httplib::Server& svr, AppState& state);
 
-void register_routes(httplib::Server& svr, AppState& state);
+// with_internal=false — /internal/* на этом сервере не регистрируются (публичный порт после
+// закрытия служебных ручек, INTERNAL_ON_PUBLIC_PORT=false; add-internal-mtls, задача 6.1).
+void register_routes(httplib::Server& svr, AppState& state, bool with_internal = true);
 
 // Строки mcp_token_exchanges_total{audience,result} для GET /metrics (docs.cpp
 // дописывает их после metrics::render(): util/metrics умеет один лейбл).

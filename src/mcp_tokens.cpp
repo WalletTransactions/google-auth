@@ -265,12 +265,13 @@ void register_internal_routes(httplib::Server& svr, AppState& state) {
     });
 }
 
-void register_routes(httplib::Server& svr, AppState& state) {
+void register_routes(httplib::Server& svr, AppState& state, bool with_internal) {
     svr.Post("/auth/mcp-tokens", [&state](const httplib::Request& req, httplib::Response& res) {
         handle_issue(state, req, res);
     });
-    // Переходный период (add-internal-mtls, D11): /internal/* пока и на публичном порту.
-    register_internal_routes(svr, state);
+    // Переходный период (add-internal-mtls, D11): /internal/* на публичном порту, пока не
+    // закрыт настройкой INTERNAL_ON_PUBLIC_PORT=false.
+    if (with_internal) register_internal_routes(svr, state);
 }
 
 } // namespace mcp_tokens

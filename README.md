@@ -786,6 +786,16 @@ wallet-mcp, wallet-ai) переводятся на служебный адрес
 `AUTH_INTERNAL_URL`; публичный путь убирается последним шагом миграции.
 Секрет `X-Service-Secret` проверяется так же на обоих портах.
 
+**Закрыть `/internal/*` на публичном порту (`INTERNAL_ON_PUBLIC_PORT=false`).** По
+умолчанию `true`: служебные ручки есть и на публичном `PORT`, как раньше (так работает
+prod, где клиентам служебный порт не выдан). `false` — на публичном порту они не
+регистрируются (404), остаются только на `INTERNAL_PORT` и `INTERNAL_TLS_PORT`; `/auth/*`,
+JWKS, `/healthz`, `/metrics` не затрагиваются. Если не задан ни один служебный порт,
+сервис не стартует: `/internal/*` не осталось бы нигде. Включать после того, как все
+клиенты (бот, wallet-mcp, wallet-ai) переведены на `AUTH_INTERNAL_URL`. Чтобы не принимать
+и обычный HTTP на служебном порту, `INTERNAL_PORT=0` (остаётся только `INTERNAL_TLS_PORT`).
+Откат — вернуть `true` / прежний `INTERNAL_PORT` и перезапустить.
+
 Проверка: `curl -X POST http://<INTERNAL_HOST>:<INTERNAL_PORT>/internal/token/exchange`
 из контейнера сети `auth-internal` → 401 (нет секрета), `/auth/refresh` на нём → 404.
 
