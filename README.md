@@ -786,6 +786,15 @@ wallet-mcp, wallet-ai) переводятся на служебный адрес
 `AUTH_INTERNAL_URL`; публичный путь убирается последним шагом миграции.
 Секрет `X-Service-Secret` проверяется так же на обоих портах.
 
+**Служебный mTLS-порт для `/healthz` и `/metrics` (`SERVICE_MTLS_PORT`).** По умолчанию
+`0` — выключен, ручки на публичном порту, как раньше. Задан (нужны `TLS_CERT`, `TLS_KEY`,
+`TLS_CA`) — отдельный слушатель на `HOST:SERVICE_MTLS_PORT` отдаёт `/healthz`, `/metrics` и
+`/version` только по взаимному TLS (клиентский сертификат от CA контура обязателен), а на
+публичном порту `/healthz` и `/metrics` пропадают (404). `/version`, `/openapi.yaml`, `/docs`,
+`/auth/*` и JWKS остаются на публичном порту: на нём гейтвей и JWKS-клиенты, `/version` опрашивает
+гейтвей по обычному HTTP. Healthcheck контейнера и Prometheus ходят на служебный порт со своими
+сертификатами (`wallet-infra/compose.mtls.yaml`, `infra/monitoring/gen-scrape-config.sh`).
+
 **Закрыть `/internal/*` на публичном порту (`INTERNAL_ON_PUBLIC_PORT=false`).** По
 умолчанию `true`: служебные ручки есть и на публичном `PORT`, как раньше (так работает
 prod, где клиентам служебный порт не выдан). `false` — на публичном порту они не
