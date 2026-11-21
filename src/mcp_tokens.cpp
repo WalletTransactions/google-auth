@@ -256,13 +256,18 @@ std::string render_metrics() {
     return out.str();
 }
 
+void register_internal_routes(httplib::Server& svr, AppState& state) {
+    svr.Post("/internal/mcp/token", [&state](const httplib::Request& req, httplib::Response& res) {
+        handle_exchange(state, req, res);
+    });
+}
+
 void register_routes(httplib::Server& svr, AppState& state) {
     svr.Post("/auth/mcp-tokens", [&state](const httplib::Request& req, httplib::Response& res) {
         handle_issue(state, req, res);
     });
-    svr.Post("/internal/mcp/token", [&state](const httplib::Request& req, httplib::Response& res) {
-        handle_exchange(state, req, res);
-    });
+    // Переходный период (add-internal-mtls, D11): /internal/* пока и на публичном порту.
+    register_internal_routes(svr, state);
 }
 
 } // namespace mcp_tokens

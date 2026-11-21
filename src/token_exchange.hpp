@@ -50,6 +50,10 @@ inline constexpr PolicyRule kPolicy[] = {
     {"wallet-mcp", "wallet-mcp", "mcp:read", "wallet-docs", "docs:ask"},
 };
 
+// Только /internal/* (служебный порт, add-internal-mtls D11); register_routes
+// на переходе регистрирует их тоже.
+void register_internal_routes(httplib::Server& svr, AppState& state);
+
 void register_routes(httplib::Server& svr, AppState& state);
 
 // Строки token_exchange_total{actor,result} для GET /metrics (docs.cpp

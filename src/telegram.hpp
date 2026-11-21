@@ -29,6 +29,10 @@
 
 namespace telegram {
 
+// Только /internal/* (служебный порт, add-internal-mtls D11); register_routes
+// на переходе регистрирует их тоже.
+void register_internal_routes(httplib::Server& svr, AppState& state);
+
 void register_routes(httplib::Server& svr, AppState& state);
 
 // Чистые помощники — в заголовке ради юнит-тестов (tests/test_telegram.cpp).

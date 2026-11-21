@@ -318,10 +318,7 @@ void handle_delete_link(AppState& state, const httplib::Request& req, httplib::R
 
 } // namespace
 
-void register_routes(httplib::Server& svr, AppState& state) {
-    svr.Post("/auth/telegram/link-code", [&state](const httplib::Request& req, httplib::Response& res) {
-        handle_link_code(state, req, res);
-    });
+void register_internal_routes(httplib::Server& svr, AppState& state) {
     svr.Post("/internal/telegram/exchange", [&state](const httplib::Request& req, httplib::Response& res) {
         handle_exchange(state, req, res);
     });
@@ -331,6 +328,14 @@ void register_routes(httplib::Server& svr, AppState& state) {
     svr.Delete("/internal/telegram/links/:tg_user_id", [&state](const httplib::Request& req, httplib::Response& res) {
         handle_internal_unlink(state, req, res);
     });
+}
+
+void register_routes(httplib::Server& svr, AppState& state) {
+    svr.Post("/auth/telegram/link-code", [&state](const httplib::Request& req, httplib::Response& res) {
+        handle_link_code(state, req, res);
+    });
+    // Переходный период (add-internal-mtls, D11): /internal/* пока и на публичном порту.
+    register_internal_routes(svr, state);
     svr.Get("/auth/telegram/links", [&state](const httplib::Request& req, httplib::Response& res) {
         handle_list_links(state, req, res);
     });

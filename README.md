@@ -743,6 +743,25 @@ curl -s -X POST http://google-auth:8080/internal/mcp/token \
 `mcp_token_issued`, `mcp_token_exchanged` (`user_id`, `device_id`),
 `mcp_token_rejected`.
 
+### Служебный порт для `/internal/*` (`INTERNAL_PORT`)
+
+Change `add-internal-mtls` (wallet-infra, D11). `INTERNAL_PORT` (по умолчанию
+`0` — выключен) поднимает **второй слушатель** только для `/internal/*`:
+`/internal/telegram/*`, `/internal/mcp/token`, `/internal/token/exchange`.
+Остальное (`/auth/*`, JWKS, `/healthz`, `/metrics`) на нём — 404.
+`INTERNAL_HOST` — адрес привязки (по умолчанию `HOST`). В compose это алиас
+`google-auth-internal` в сети `auth-internal`: порт слушает только её
+интерфейс, и контейнеры общей сети контура (wallet-api, гейтвей) его не
+достают. Привязка к `0.0.0.0` сегментацию не даёт.
+
+На переходе `/internal/*` остаётся и на публичном `PORT` — клиенты (wallet-telegram,
+wallet-mcp, wallet-ai) переводятся на служебный адрес по одному через
+`AUTH_INTERNAL_URL`; публичный путь убирается последним шагом миграции.
+Секрет `X-Service-Secret` проверяется так же на обоих портах.
+
+Проверка: `curl -X POST http://<INTERNAL_HOST>:<INTERNAL_PORT>/internal/token/exchange`
+из контейнера сети `auth-internal` → 401 (нет секрета), `/auth/refresh` на нём → 404.
+
 ### Обмен токена (`/internal/token/exchange`)
 
 Сервис-actor меняет JWT пользователя на короткий JWT для следующего сервиса

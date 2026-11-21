@@ -32,6 +32,10 @@ inline constexpr const char* kTokenPrefix = "wmcp_";
 // выпуск раздувал бы список устройств.
 inline constexpr std::size_t kMaxTokensPerUser = 10;
 
+// Только /internal/* (служебный порт, add-internal-mtls D11); register_routes
+// на переходе регистрирует их тоже.
+void register_internal_routes(httplib::Server& svr, AppState& state);
+
 void register_routes(httplib::Server& svr, AppState& state);
 
 // Строки mcp_token_exchanges_total{audience,result} для GET /metrics (docs.cpp

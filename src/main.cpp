@@ -30,6 +30,7 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <unordered_set>
 
 #include "admin.hpp"
@@ -416,7 +417,7 @@ int main() {
     // в thread_local, попадёт и в эту строку; clear_trace_id() — последнее,
     // что касается его на этом потоке, дальше он уйдёт в пул httplib
     // обслуживать чужой запрос (см. set_trace_id в log.hpp).
-    svr.set_logger([](const httplib::Request& req, const httplib::Response& res) {
+    const auto access_logger = [](const httplib::Request& req, const httplib::Response& res) {
         // Метрики — на ВСЕ запросы, включая /healthz и сам /metrics: в
         // отличие от access-лога ниже, кардинальность здесь уже ограничена
         // applog::current_route() (см. util/metrics.hpp), а знать RPS/
@@ -486,16 +487,50 @@ int main() {
                        {"response_body",
                         secret_body ? std::string("(скрыто: секреты)") : loggable_response_body(res)}});
         applog::clear_request_context();
-    });
+    };
+    svr.set_logger(access_logger);
+
+    // Служебный порт (change add-internal-mtls, D11): второй слушатель только
+    // для /internal/* — его публикуют лишь в сети auth-internal. Пусто или 0 —
+    // не поднимается. INTERNAL_HOST — адрес привязки (по умолчанию HOST): в
+    // compose это алиас google-auth в сети auth-internal, чтобы порт не слушал
+    // интерфейс общей сети контура, иначе сегментация ничего не даёт.
+    // Пока /internal/* остаётся и на публичном порту (шаг 6.1).
+    httplib::Server internal_svr;
+    std::thread internal_thread;
+    int internal_port = std::stoi(env_or("INTERNAL_PORT", "0"));
+    std::string internal_host = env_or("INTERNAL_HOST", host);
+    if (internal_port != 0) {
+        if (internal_port == port) {
+            applog::error("INTERNAL_PORT совпадает с PORT (" + std::to_string(port) + ")");
+            return 1;
+        }
+        internal_svr.set_pre_routing_handler(handle_pre_routing);
+        telegram::register_internal_routes(internal_svr, state);
+        mcp_tokens::register_internal_routes(internal_svr, state);
+        token_exchange::register_internal_routes(internal_svr, state);
+        internal_svr.set_logger(access_logger);
+        if (!internal_svr.bind_to_port(internal_host, internal_port)) {
+            applog::error("не удалось занять служебный порт " + internal_host + ":" + std::to_string(internal_port));
+            return 1;
+        }
+        internal_thread = std::thread([&internal_svr] { internal_svr.listen_after_bind(); });
+        applog::info("служебный порт (только /internal/*): http://" + internal_host + ":" +
+                     std::to_string(internal_port));
+    }
 
     applog::info("google-auth v" + std::string(version::kBuild) + " (" +
                  std::string(version::kGitCommit) + ") listening on http://" + host + ":" +
                  std::to_string(port) +
                  (log_dir.empty() ? "" : " (логи: " + log_dir + "/)"));
-    if (!svr.listen(host, port)) {
+    bool ok = svr.listen(host, port);
+    if (!ok) {
         applog::error("не удалось запустить сервер на " + host + ":" + std::to_string(port) +
                       " (порт занят или недоступен?)");
-        return 1;
     }
-    return 0;
+    if (internal_thread.joinable()) {
+        internal_svr.stop();
+        internal_thread.join();
+    }
+    return ok ? 0 : 1;
 }

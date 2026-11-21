@@ -273,10 +273,15 @@ void handle_exchange(AppState& state, const httplib::Request& req, httplib::Resp
 
 } // namespace detail
 
-void register_routes(httplib::Server& svr, AppState& state) {
+void register_internal_routes(httplib::Server& svr, AppState& state) {
     svr.Post("/internal/token/exchange", [&state](const httplib::Request& req, httplib::Response& res) {
         detail::handle_exchange(state, req, res);
     });
+}
+
+void register_routes(httplib::Server& svr, AppState& state) {
+    // Переходный период (add-internal-mtls, D11): /internal/* пока и на публичном порту.
+    register_internal_routes(svr, state);
 }
 
 } // namespace token_exchange
