@@ -112,11 +112,20 @@ void handle_version(const httplib::Request&, httplib::Response& res) {
 
 } // namespace
 
-void register_routes(httplib::Server& svr) {
-    svr.Get("/openapi.yaml", handle_openapi_yaml);
-    svr.Get("/docs", handle_docs);
+void register_service_routes(httplib::Server& svr) {
     svr.Get("/healthz", handle_healthz);
     svr.Get("/metrics", handle_metrics);
+    svr.Get("/version", handle_version);
+}
+
+void register_routes(httplib::Server& svr, bool with_service_routes) {
+    svr.Get("/openapi.yaml", handle_openapi_yaml);
+    svr.Get("/docs", handle_docs);
+    if (with_service_routes) {
+        svr.Get("/healthz", handle_healthz);
+        svr.Get("/metrics", handle_metrics);
+    }
+    // /version — публично всегда: его опрашивает гейтвей (сводка версий) по обычному HTTP.
     svr.Get("/version", handle_version);
     // set_mount_point отдаёт статику по префиксу пути — здесь это ТОЛЬКО
     // сам Swagger UI (JS/CSS/favicon), не пересекается ни с одним реальным

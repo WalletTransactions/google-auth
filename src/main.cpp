@@ -430,7 +430,12 @@ int main() {
     mcp_tokens::register_routes(svr, state, internal_on_public);
     token_exchange::register_routes(svr, state, internal_on_public);
     if (!internal_on_public) applog::info("/internal/* на публичном порту закрыты (INTERNAL_ON_PUBLIC_PORT=false)");
-    docsapi::register_routes(svr); // GET /openapi.yaml, /docs, /healthz, статика /vendor/swagger-ui/*
+    // SERVICE_MTLS_PORT — отдельный mTLS-слушатель для /healthz, /metrics, /version (change
+    // add-internal-mtls, задача 8.3): при взаимном TLS эти ручки не должны быть доступны без
+    // сертификата, а публичный порт (гейтвей, JWKS) остаётся обычным HTTP. /version остаётся и
+    // на публичном (его опрашивает гейтвей). Без SERVICE_MTLS_PORT всё как раньше.
+    const int service_mtls_port = std::stoi(env_or("SERVICE_MTLS_PORT", "0"));
+    docsapi::register_routes(svr, service_mtls_port == 0); // GET /openapi.yaml, /docs, /healthz, статика /vendor/swagger-ui/*
 
     // Access-лог: одна строка на запрос (метод, путь, статус ответа). Ещё на
     // том же потоке, что и handle_pre_routing — trace_id (если был) всё ещё
@@ -567,6 +572,34 @@ int main() {
         return true;
     };
     if (internal_port != 0 && !start_internal(std::make_unique<httplib::Server>(), internal_port, "http")) return 1;
+    if (service_mtls_port != 0) {
+        if (!tls_loaded.config.enabled()) {
+            applog::error("SERVICE_MTLS_PORT задан, но не заданы TLS_CERT, TLS_KEY, TLS_CA");
+            return 1;
+        }
+        if (service_mtls_port == port || service_mtls_port == internal_port || service_mtls_port == internal_tls_port) {
+            applog::error("SERVICE_MTLS_PORT совпадает с другим портом сервиса");
+            return 1;
+        }
+        std::string err;
+        auto service_server = nettls::make_server(tls_loaded.config, &err);
+        if (!service_server) {
+            applog::error(err);
+            return 1;
+        }
+        docsapi::register_service_routes(*service_server);
+        service_server->set_pre_routing_handler(handle_pre_routing);
+        service_server->set_logger(access_logger);
+        // Слушает HOST (общая сеть контура): им пользуются Prometheus и healthcheck.
+        if (!service_server->bind_to_port(host, service_mtls_port)) {
+            applog::error("не удалось занять служебный mTLS-порт " + host + ":" + std::to_string(service_mtls_port));
+            return 1;
+        }
+        httplib::Server* raw = service_server.get();
+        internal_threads.emplace_back([raw] { raw->listen_after_bind(); });
+        internal_servers.push_back(std::move(service_server));
+        applog::info("служебный mTLS-порт (healthz, metrics, version): " + host + ":" + std::to_string(service_mtls_port));
+    }
     if (internal_tls_port != 0) {
         if (!tls_loaded.config.enabled()) {
             applog::error("INTERNAL_TLS_PORT задан, но не заданы TLS_CERT, TLS_KEY, TLS_CA");
