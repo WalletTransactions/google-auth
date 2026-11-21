@@ -5,8 +5,12 @@
 
 #include <algorithm>
 
+#include "app_state.hpp"
 #include "httplib.h"
+#include "mcp_tokens.hpp"
+#include "telegram.hpp"
 #include "test_framework.hpp"
+#include "token_exchange.hpp"
 #include "tls_test_util.hpp"
 
 using namespace tlstest;
@@ -216,4 +220,50 @@ TEST(ii_off_mode_changes_nothing) {
     Running run(std::make_unique<httplib::Server>(), [&cfg](httplib::Server& s) { routes(s, cfg); });
     nettls::Config plain;
     CHECK_EQ(status_of(plain, run.port(), "/internal/telegram/token"), 200);
+}
+
+namespace {
+
+int post_status(int port, const std::string& path) {
+    httplib::Client cli(url(port));
+    auto res = cli.Post(path, "", "text/plain");
+    return res ? res->status : 0;
+}
+
+} // namespace
+
+TEST(ii_public_port_serves_internal_routes_only_when_enabled) {
+    AppState state; // пустой: ручки отвечают 503/400 до обращения к БД, нужен лишь «не 404»
+    Running open(std::make_unique<httplib::Server>(), [&state](httplib::Server& s) {
+        telegram::register_routes(s, state, true);
+        mcp_tokens::register_routes(s, state, true);
+        token_exchange::register_routes(s, state, true);
+    });
+    CHECK(post_status(open.port(), "/internal/token/exchange") != 404);
+    CHECK(post_status(open.port(), "/internal/telegram/token") != 404);
+    CHECK(post_status(open.port(), "/internal/mcp/token") != 404);
+
+    Running closed(std::make_unique<httplib::Server>(), [&state](httplib::Server& s) {
+        telegram::register_routes(s, state, false);
+        mcp_tokens::register_routes(s, state, false);
+        token_exchange::register_routes(s, state, false);
+    });
+    CHECK_EQ(post_status(closed.port(), "/internal/token/exchange"), 404);
+    CHECK_EQ(post_status(closed.port(), "/internal/telegram/token"), 404);
+    CHECK_EQ(post_status(closed.port(), "/internal/telegram/exchange"), 404);
+    CHECK_EQ(post_status(closed.port(), "/internal/mcp/token"), 404);
+    // публичные ручки на месте (401: без авторизации)
+    CHECK(post_status(closed.port(), "/auth/telegram/link-code") != 404);
+    CHECK(post_status(closed.port(), "/auth/mcp-tokens") != 404);
+}
+
+TEST(ii_dedicated_internal_server_always_has_internal_routes) {
+    AppState state;
+    Running run(std::make_unique<httplib::Server>(), [&state](httplib::Server& s) {
+        telegram::register_internal_routes(s, state);
+        mcp_tokens::register_internal_routes(s, state);
+        token_exchange::register_internal_routes(s, state);
+    });
+    CHECK(post_status(run.port(), "/internal/token/exchange") != 404);
+    CHECK_EQ(post_status(run.port(), "/auth/telegram/link-code"), 404);
 }
