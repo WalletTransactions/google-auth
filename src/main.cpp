@@ -352,8 +352,14 @@ int main() {
     std::string redis_host = env_or("REDIS_HOST", "127.0.0.1");
     int redis_port = std::stoi(env_or("REDIS_PORT", "6379"));
     std::string redis_password = env_or("REDIS_PASSWORD", "");
+    // ACL-пользователь Redis 6+ (change add-redis-auth): пусто — `AUTH <пароль>` (default), как раньше.
+    std::string redis_username = env_or("REDIS_USERNAME", "");
+    if (!redis_username.empty() && redis_password.empty()) {
+        applog::error("REDIS_USERNAME задан без REDIS_PASSWORD (см. README.md, «Redis»)");
+        return 1;
+    }
     try {
-        state.redis = std::make_unique<redis::Client>(redis_host, redis_port, redis_password);
+        state.redis = std::make_unique<redis::Client>(redis_host, redis_port, redis_password, redis_username);
     } catch (const std::exception& ex) {
         applog::error(std::string("Redis: ") + ex.what());
         return 1;

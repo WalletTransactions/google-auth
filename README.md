@@ -1323,8 +1323,10 @@ DDL на обе базы проекта, и по одной строго DML-р�
 годится для масштаба демо-сервиса; под реальной нагрузкой нужен пул
 соединений или PgBouncer перед сервисом.
 
-**Access-токены — в Redis** (`REDIS_HOST`/`REDIS_PORT`/`REDIS_PASSWORD`, см.
-`.env.example`): ключ `access_token:<base64url(sha256(токен))>` (тот же приём
+**Access-токены — в Redis** (`REDIS_HOST`/`REDIS_PORT`/`REDIS_PASSWORD`/`REDIS_USERNAME`, см.
+`.env.example`; `REDIS_USERNAME` — ACL-пользователь Redis 6+, change `add-redis-auth` в wallet-infra:
+`AUTH <пользователь> <пароль>`, пусто — прежнее `AUTH <пароль>`; имя без пароля — ошибка старта;
+неверные данные — процесс завершается с «Redis: AUTH не прошёл», пароль в журнал не попадает): ключ `access_token:<base64url(sha256(токен))>` (тот же приём
 хеширования, что и у refresh-токенов ниже — сам JWT в Redis не попадает),
 значение — `user_id`, TTL = `ACCESS_TOKEN_TTL_SECS` (тот же срок, которым
 подписан сам JWT). Redis `EXPIRE` сам удаляет запись по истечении — никакого

@@ -210,13 +210,13 @@ std::vector<std::string> read_array_reply(socket_t sock) {
 
 } // namespace
 
-Client::Client(const std::string& host, int port, const std::string& password) {
+Client::Client(const std::string& host, int port, const std::string& password, const std::string& username) {
     socket_t sock = connect_to(host, port);
     fd_ = static_cast<std::intptr_t>(sock);
 
     if (!password.empty()) {
         try {
-            send_command({"AUTH", password});
+            send_command(detail::auth_command(username, password));
         } catch (const std::exception& ex) {
             close_socket(sock);
             fd_ = -1;
@@ -313,6 +313,11 @@ std::optional<int64_t> Client::ttl(const std::string& key) {
 }
 
 namespace detail {
+
+std::vector<std::string> auth_command(const std::string& username, const std::string& password) {
+    if (username.empty()) return {"AUTH", password};
+    return {"AUTH", username, password};
+}
 
 int64_t parse_integer(const std::optional<std::string>& reply) {
     if (!reply || reply->empty()) throw std::runtime_error("Redis: ожидался integer-ответ");

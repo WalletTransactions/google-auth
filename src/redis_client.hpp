@@ -27,7 +27,9 @@ public:
     // разработки и для контейнера в приватной docker-сети). Бросает
     // std::runtime_error, если не удалось подключиться или (при заданном
     // пароле) AUTH не прошёл.
-    Client(const std::string& host, int port, const std::string& password);
+    // username — необязательный ACL-пользователь Redis 6+ (REDIS_USERNAME, change add-redis-auth):
+    // пусто — прежнее `AUTH <пароль>` (пользователь default).
+    Client(const std::string& host, int port, const std::string& password, const std::string& username = "");
     ~Client();
     Client(const Client&) = delete;
     Client& operator=(const Client&) = delete;
@@ -141,6 +143,9 @@ int64_t parse_integer(const std::optional<std::string>& reply);
 
 // Ответ TTL/EXPIRETIME: -2 — ключа нет (nullopt), -1 и больше отдаются как есть.
 std::optional<int64_t> parse_ttl(const std::optional<std::string>& reply);
+
+// Команда аутентификации: `AUTH <пароль>` без пользователя, `AUTH <пользователь> <пароль>` с ним.
+std::vector<std::string> auth_command(const std::string& username, const std::string& password);
 
 } // namespace detail
 
