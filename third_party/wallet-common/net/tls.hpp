@@ -77,6 +77,11 @@ std::unique_ptr<httplib::Server> make_server(const Config& cfg, std::string* err
 std::unique_ptr<httplib::Client> make_client(const std::string& base_url, const Config& cfg,
                                              std::string* error = nullptr);
 
+// То же по значению — для кода, где клиент создаётся прямо в вызове (`httplib::Client cli(url)`).
+// Бросает std::runtime_error, если TLS включён, а клиент создать нельзя (неверные файлы): на
+// старте сервисы это проверяют, поэтому в рантайме это редкая авария, а не штатный путь.
+httplib::Client client_value(const std::string& base_url, const Config& cfg);
+
 // http://… → https://…; остальное без изменений.
 std::string to_https(const std::string& base_url);
 
