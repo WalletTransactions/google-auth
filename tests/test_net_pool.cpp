@@ -44,6 +44,12 @@ struct Counted {
         s->new_task_queue = [this] { return new CountingQueue(&connections); };
         run = std::make_unique<Running>(std::move(s), [](httplib::Server& svr) {
             svr.Get("/ping", [](const httplib::Request&, httplib::Response& res) { res.set_content("pong", "text/plain"); });
+            // Медленная ручка: держит соединение занятым (проверка предела max_total).
+            svr.Get("/slow", [](const httplib::Request& req, httplib::Response& res) {
+                const int ms = req.has_param("ms") ? std::atoi(req.get_param_value("ms").c_str()) : 150;
+                std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+                res.set_content("slow", "text/plain");
+            });
         });
     }
     int port() const { return run->port(); }
@@ -109,6 +115,58 @@ TEST(pool_concurrent_calls_get_exclusive_clients) {
     auto st = pool.stats();
     CHECK(st.created <= 8); // не больше потоков: клиенты возвращаются в пул
     CHECK(server.connections.load() <= 8);
+}
+
+TEST(bounded_pool_never_opens_more_connections_than_max_total) {
+    nettls::Config plain;
+    Counted server(std::make_unique<httplib::Server>());
+    // 12 потоков, предел 3: остальные ждут в очереди пула, лишних соединений нет.
+    nettls::ClientPool pool(url(server.port()), plain, 3, 30, /*max_idle=*/2, /*max_total=*/3, /*wait_timeout_sec=*/20);
+
+    std::atomic<int> ok{0};
+    std::vector<std::thread> threads;
+    for (int t = 0; t < 12; ++t) {
+        threads.emplace_back([&] {
+            for (int i = 0; i < 3; ++i) {
+                auto res = pool.call([](httplib::Client& c) { return c.Get("/slow?ms=60"); });
+                if (res && res->status == 200) ++ok;
+            }
+        });
+    }
+    for (auto& t : threads) t.join();
+    CHECK_EQ(ok.load(), 36);
+    auto st = pool.stats();
+    CHECK(st.created <= 3);
+    CHECK(server.connections.load() <= 3); // все 36 запросов — на трёх постоянных соединениях
+    CHECK(st.waited > 0);
+    CHECK_EQ(st.timed_out, static_cast<size_t>(0));
+}
+
+TEST(bounded_pool_times_out_instead_of_opening_extra_connection) {
+    nettls::Config plain;
+    Counted server(std::make_unique<httplib::Server>());
+    nettls::ClientPool pool(url(server.port()), plain, 3, 30, /*max_idle=*/1, /*max_total=*/1, /*wait_timeout_sec=*/1);
+
+    std::atomic<bool> first_ok{false};
+    std::thread holder([&] {
+        auto res = pool.call([](httplib::Client& c) { return c.Get("/slow?ms=2200"); });
+        first_ok = res && res->status == 200;
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(300)); // holder занял единственный слот
+    const auto t0 = std::chrono::steady_clock::now();
+    auto res = ping(pool);
+    const auto waited = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+    CHECK(!res);
+    CHECK(res.error() == httplib::Error::ConnectionTimeout);
+    CHECK(waited >= 900 && waited < 1800); // ждал ≈ wait_timeout_sec, не открыл второе соединение
+    holder.join();
+    CHECK(first_ok.load());
+    CHECK_EQ(server.connections.load(), 1);
+    CHECK_EQ(pool.stats().timed_out, static_cast<size_t>(1));
+    // слот освободился — следующий запрос проходит на том же постоянном соединении
+    auto again = ping(pool);
+    REQUIRE(static_cast<bool>(again));
+    CHECK_EQ(server.connections.load(), 1);
 }
 
 TEST(pool_reports_invalid_tls_config_instead_of_crashing) {

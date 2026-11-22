@@ -1,6 +1,7 @@
 #include "net/tls.hpp"
 
 #include <cstdlib>
+#include <stdexcept>
 
 namespace nettls {
 
@@ -57,6 +58,13 @@ Settings settings_from_env() {
         s.call_internal = true;
     }
     return s;
+}
+
+httplib::Client client_value(const std::string& base_url, const Config& cfg) {
+    std::string err;
+    auto client = make_client(base_url, cfg, &err);
+    if (!client) throw std::runtime_error(err.empty() ? "TLS-клиент не создан" : err);
+    return std::move(*client);
 }
 
 std::string to_https(const std::string& base_url) {
