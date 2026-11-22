@@ -3,22 +3,47 @@
 // шапку): нужен ровно тот набор команд, что использует repo.hpp — не повод
 // тащить hiredis/redis-plus-plus отдельной зависимостью (апт-пакет в
 // Containerfile, и без внятного пути установки под Windows-сборку вне
-// Docker, см. README "Зависимости"). Одно постоянное соединение + мьютекс —
-// тот же паттерн, что db::Database поверх libpq (см. db.hpp): для масштаба
-// этого сервиса достаточно, настоящая нагрузка потребует пул соединений.
+// Docker, см. README "Зависимости").
+//
+// Пул постоянных соединений (REDIS_POOL_SIZE, по умолчанию 8): команды разных
+// потоков идут параллельно, каждая на своём соединении, а не по очереди под
+// одним мьютексом. Соединение не живёт «навсегда»: ошибка ввода-вывода
+// (рестарт Redis, обрыв сети, таймаут) закрывает его, следующая команда
+// открывает новое (с AUTH). Если сбой случился на соединении, взятом из пула
+// (оно могло протухнуть, например после рестарта Redis), команда один раз
+// повторяется на свежем — рестарт Redis проходит для вызывающих незаметно.
+// Повтор допустим для всех команд этого клиента: SET/DEL/SADD/SREM/EXPIRE/GET/
+// EXISTS/TTL идемпотентны; INCR при потерянном ответе мог бы засчитаться
+// дважды (счётчик неудачных входов — лишняя попытка, не проблема), GETDEL —
+// вернуть «ключа нет» (токен уже потрачен, пользователь просто войдёт заново).
+// На connect/send/recv стоят таймауты (REDIS_TIMEOUT_MS): зависший Redis не
+// блокирует потоки сервиса навсегда.
 //
 // Используется для активных access- и refresh-токенов и обратного индекса
 // "все токены этого user_id" (см. repo.hpp) — не общий Redis-клиент "на все
 // случаи", а ровно то подмножество команд, что для этого нужно.
 #pragma once
 
+#include <condition_variable>
 #include <cstdint>
+#include <functional>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
 
 namespace redis {
+
+struct Conn; // одно соединение с буфером чтения (redis_client.cpp)
+
+// Настройки пула и таймаутов (REDIS_POOL_SIZE, REDIS_TIMEOUT_MS в main.cpp).
+struct Options {
+    std::size_t pool_size = 8;       // максимум одновременных соединений (>= 1)
+    int connect_timeout_ms = 2000;   // подключение + AUTH
+    int io_timeout_ms = 5000;        // отправка и чтение ответа одной команды
+    int wait_timeout_ms = 5000;      // ожидание свободного соединения при исчерпанном пуле
+};
 
 class Client {
 public:
@@ -29,7 +54,10 @@ public:
     // пароле) AUTH не прошёл.
     // username — необязательный ACL-пользователь Redis 6+ (REDIS_USERNAME, change add-redis-auth):
     // пусто — прежнее `AUTH <пароль>` (пользователь default).
-    Client(const std::string& host, int port, const std::string& password, const std::string& username = "");
+    // Первое соединение открывается сразу (ошибка настройки/пароля видна на старте), остальные — по мере
+    // надобности.
+    Client(const std::string& host, int port, const std::string& password, const std::string& username = "",
+           Options options = {});
     ~Client();
     Client(const Client&) = delete;
     Client& operator=(const Client&) = delete;
@@ -116,6 +144,15 @@ public:
     // сам, иначе счётчик не сбросится никогда).
     std::optional<int64_t> ttl(const std::string& key);
 
+    struct Stats {
+        std::size_t connects = 0;   // открытых соединений за всё время (включая переподключения)
+        std::size_t retried = 0;    // команд, повторённых на свежем соединении после сбоя «протухшего»
+        std::size_t io_errors = 0;  // закрытых из-за ошибки ввода-вывода или таймаута
+        std::size_t waited = 0;     // команд, ждавших свободного соединения
+        std::size_t open = 0;       // соединений сейчас (в работе + в простое)
+    };
+    Stats stats() const;
+
 private:
     // nullopt — только для null-bulk-ответа ($-1, "ключа нет"), отличать от
     // пустой строки-значения. SET/EXISTS/DEL никогда не возвращают null-bulk
@@ -123,13 +160,27 @@ private:
     // GETDEL реально может.
     std::optional<std::string> send_command(const std::vector<std::string>& args);
 
-    // Хранится как intptr_t, а не как платформенный SOCKET/int — чтобы этот
-    // заголовок не тянул <winsock2.h>/<sys/socket.h> во все .cpp, которые
-    // просто хотят тип redis::Client (тот же приём, что db.hpp с
-    // форвард-декларацией PGconn). Оба реальных типа (SOCKET на Windows, int
-    // на POSIX) без потерь помещаются в intptr_t.
-    std::intptr_t fd_ = -1;
-    std::mutex mutex_;
+    // Выполняет io на соединении из пула: берёт (или открывает) соединение, при сбое на «протухшем» повторяет
+    // один раз на свежем, возвращает исправное соединение в пул. io делает запись команды и чтение ответа.
+    void run(const std::function<void(Conn&)>& io);
+    // force_fresh — не брать соединение из простоя (повтор после сбоя «протухшего»): простаивающие закрываются.
+    std::unique_ptr<Conn> acquire(bool& reused, bool force_fresh = false);
+    std::unique_ptr<Conn> open_connection(); // connect + AUTH; слот под pool_size уже занят вызывающим
+    void release(std::unique_ptr<Conn> conn);
+    void discard();     // соединение закрыто: освободить слот
+    void flush_idle();  // закрыть простаивающие (после рестарта Redis все протухли)
+
+    std::string host_;
+    int port_;
+    std::string password_;
+    std::string username_;
+    Options options_;
+
+    mutable std::mutex mutex_;
+    std::condition_variable cv_;
+    std::vector<std::unique_ptr<Conn>> idle_;
+    std::size_t open_ = 0; // в работе + в простое
+    Stats stats_;
 };
 
 // Разбор уже прочитанного скалярного ответа — отдельно от сокета, чтобы его

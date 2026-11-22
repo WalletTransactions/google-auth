@@ -358,8 +358,27 @@ int main() {
         applog::error("REDIS_USERNAME задан без REDIS_PASSWORD (см. README.md, «Redis»)");
         return 1;
     }
+    // Пул соединений и таймауты (redis_client.hpp): REDIS_POOL_SIZE — сколько команд идут параллельно,
+    // REDIS_TIMEOUT_MS — предел на подключение, отправку и ответ одной команды.
+    redis::Options redis_options;
     try {
-        state.redis = std::make_unique<redis::Client>(redis_host, redis_port, redis_password, redis_username);
+        const long pool = std::stol(env_or("REDIS_POOL_SIZE", "8"));
+        const long timeout_ms = std::stol(env_or("REDIS_TIMEOUT_MS", "5000"));
+        if (pool < 1 || pool > 256 || timeout_ms < 100 || timeout_ms > 60000) {
+            applog::error("REDIS_POOL_SIZE допустим 1–256, REDIS_TIMEOUT_MS — 100–60000 (см. README.md, «Redis»)");
+            return 1;
+        }
+        redis_options.pool_size = static_cast<std::size_t>(pool);
+        redis_options.io_timeout_ms = static_cast<int>(timeout_ms);
+        redis_options.wait_timeout_ms = static_cast<int>(timeout_ms);
+        redis_options.connect_timeout_ms = static_cast<int>(std::min<long>(timeout_ms, 2000));
+    } catch (const std::exception&) {
+        applog::error("REDIS_POOL_SIZE и REDIS_TIMEOUT_MS — целые числа (см. README.md, «Redis»)");
+        return 1;
+    }
+    try {
+        state.redis = std::make_unique<redis::Client>(redis_host, redis_port, redis_password, redis_username,
+                                                      redis_options);
     } catch (const std::exception& ex) {
         applog::error(std::string("Redis: ") + ex.what());
         return 1;
