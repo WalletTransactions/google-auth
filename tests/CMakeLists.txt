@@ -34,6 +34,7 @@ add_executable(google_auth_tests
     test_net_tls.cpp
     test_internal_identity.cpp
     test_net_pool.cpp
+    test_redis_client.cpp
 
     ${CMAKE_SOURCE_DIR}/src/passwords.cpp
     ${CMAKE_SOURCE_DIR}/src/auth_config.cpp
