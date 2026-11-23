@@ -6,9 +6,10 @@
 # ссылается на repo::*, а repo.cpp — на db.cpp/redis_client.cpp, поэтому без
 # них тестовый экзешник просто не слинкуется (даже если ни один тест не
 # доходит до вызова этих функций в рантайме — см. tests/README.md, что
-# именно поэтому здесь не протестировано). google.cpp/admin.cpp/pages.cpp/
-# main.cpp сюда сознательно не включены — auth.hpp от них не зависит (см. её
-# шапку), а main.cpp приносит второй main().
+# именно поэтому здесь не протестировано). google.cpp/admin.cpp/main.cpp
+# сюда сознательно не включены — auth.hpp от них не зависит (см. её шапку),
+# а main.cpp приносит второй main(). pages.cpp включён: зависимостей у него
+# нет, а экранирование pages::error проверяет test_pages.cpp.
 add_executable(google_auth_tests
     test_main.cpp
     test_base64.cpp
@@ -35,7 +36,9 @@ add_executable(google_auth_tests
     test_internal_identity.cpp
     test_net_pool.cpp
     test_redis_client.cpp
+    test_pages.cpp
 
+    ${CMAKE_SOURCE_DIR}/src/pages.cpp
     ${CMAKE_SOURCE_DIR}/src/passwords.cpp
     ${CMAKE_SOURCE_DIR}/src/auth_config.cpp
     ${CMAKE_SOURCE_DIR}/src/auth_limits.cpp

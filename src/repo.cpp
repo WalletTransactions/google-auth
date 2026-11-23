@@ -242,6 +242,11 @@ bool delete_telegram_link(db::Database& db, const std::string& user_id, const st
     return !res.rows.empty();
 }
 
+size_t delete_all_telegram_links(db::Database& db, const std::string& user_id) {
+    auto res = db.exec("DELETE FROM telegram_links WHERE user_id = $1 RETURNING tg_user_id", {user_id});
+    return res.rows.size();
+}
+
 std::optional<TelegramLink> delete_telegram_link_by_tg(db::Database& db, const std::string& tg_user_id) {
     auto res = db.exec(std::string("DELETE FROM telegram_links WHERE tg_user_id = $1 RETURNING ") +
                            kTelegramLinkColumns,

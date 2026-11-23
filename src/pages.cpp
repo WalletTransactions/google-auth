@@ -6,10 +6,10 @@ namespace pages {
 
 namespace {
 
-// Email/имя пользователя приходят от Google — доверять им как готовой
-// HTML-разметке нельзя. Нужен для confirm_signup(): единственного места в
-// этом файле, где во вставляемых значениях есть символы, которые могли бы
-// сломать разметку или дать XSS ('&', '<', '>', '"').
+// Email/имя пользователя приходят от Google, текст ошибки — из query-строки
+// callback'а: доверять им как готовой HTML-разметке нельзя. Нужен для
+// confirm_signup() и error() — мест, где во вставляемых значениях бывают
+// символы, ломающие разметку или дающие XSS ('&', '<', '>', '"', '\'').
 std::string html_escape(const std::string& s) {
     std::string out;
     out.reserve(s.size());
@@ -19,6 +19,7 @@ std::string html_escape(const std::string& s) {
             case '<': out += "&lt;"; break;
             case '>': out += "&gt;"; break;
             case '"': out += "&quot;"; break;
+            case '\'': out += "&#39;"; break;
             default: out += c;
         }
     }
@@ -100,7 +101,10 @@ std::string error(const std::string& message) {
   </div>
 </body>
 </html>)HTML";
-    return render(tmpl, {{"MESSAGE", message}});
+    // message собирается из ?error= callback'а и ответов Google — экранируем
+    // всегда: иначе /auth/google/callback?error=<script> — reflected XSS на
+    // origin кабинета (gateway проксирует /auth/*).
+    return render(tmpl, {{"MESSAGE", html_escape(message)}});
 }
 
 std::string confirm_signup(const PendingSignup& pending, const std::string& confirm_token) {

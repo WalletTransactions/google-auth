@@ -185,7 +185,10 @@ std::optional<UserRecord> claim_password_account(AppState& state, const std::str
 
     // Пароль удалён самим link_google_sub; теперь гасим уже выданные сессии
     // (в том числе MCP-токены) — иначе захватчик продолжил бы пользоваться ими.
+    // Связки Telegram живут в Postgres, а не в Redis: без их удаления чат
+    // захватчика, привязанный до claim, получал бы токены бота к данным владельца.
     repo::revoke_all_user_tokens(*state.redis, linked->id);
+    repo::delete_all_telegram_links(*lease, linked->id);
     applog::warn("password account claimed by google",
                  {{"event", "password_claimed_by_google"}, {"user_id", linked->id}});
     metrics::inc_counter("password_auth_total", "События входа и регистрации по паролю по результату.",
