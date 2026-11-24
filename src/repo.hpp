@@ -113,6 +113,10 @@ bool delete_telegram_link(db::Database& db, const std::string& user_id, const st
 // Удаляет по одному tg_user_id (/unlink из самого Telegram — там владелец
 // связки и есть этот Telegram-аккаунт). Возвращает удалённую строку.
 std::optional<TelegramLink> delete_telegram_link_by_tg(db::Database& db, const std::string& tg_user_id);
+// Удаляет все связки пользователя (смена владельца записи — claim Google'ом,
+// админский сброс пароля): связка — та же сессия, только в Postgres, и
+// revoke_all_user_tokens её не трогает. Возвращает число удалённых строк.
+size_t delete_all_telegram_links(db::Database& db, const std::string& user_id);
 
 // Refresh-токены — в Redis, не в Postgres (переехали вместе с
 // access-токенами — см. README google-auth, "Персистентность"): та же пара

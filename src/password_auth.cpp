@@ -361,9 +361,13 @@ void handle_admin_reset(AppState& state, const httplib::Request& req, httplib::R
         return;
     }
 
-    repo::set_password(*state.db_pool->acquire(), target->id,
+    auto lease = state.db_pool->acquire();
+    repo::set_password(*lease, target->id,
                        passwords::make_record(new_password, state.auth_config.pbkdf2_iterations));
+    // Сброс — «выкинуть всех»: и сессии в Redis, и связки Telegram в Postgres
+    // (иначе бот, привязанный тем, кто знал старый пароль, остаётся при данных).
     repo::revoke_all_user_tokens(*state.redis, target->id);
+    repo::delete_all_telegram_links(*lease, target->id);
     audit("reset", "ok", "admin_reset", ip, target->id);
     res.status = 204;
 }

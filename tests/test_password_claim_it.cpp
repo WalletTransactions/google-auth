@@ -81,6 +81,13 @@ TEST(it_claim_takes_squatted_account_and_revokes_sessions) {
     CHECK(squatter->role == Role::User); // email не подтверждён — админом не стать
     // Сессия захватчика живёт.
     auth::TokenPair stolen = auth::issue_tokens(state, *squatter, web_device());
+    // И Telegram-чат захватчика привязан к записи (связка — в Postgres).
+    repo::TelegramLink tg;
+    tg.tg_user_id = std::to_string(100000000 + std::rand() % 900000000);
+    tg.user_id = squatter->id;
+    tg.device_id = uuidgen::v4();
+    tg.tg_username = "squatter";
+    repo::upsert_telegram_link(*state.db_pool->acquire(), tg);
 
     std::string sub = new_sub();
     auto claimed = auth::claim_password_account(state, sub, email, true, "Владелец", "https://pic/o");
@@ -95,6 +102,9 @@ TEST(it_claim_takes_squatted_account_and_revokes_sessions) {
     // Пароль захватчика удалён, его сессия отозвана.
     CHECK(!repo::find_password(*state.db_pool->acquire(), squatter->id).has_value());
     CHECK(!auth::rotate_refresh_token(state, stolen.refresh_token).has_value());
+    // Связка Telegram захватчика удалена — бот больше не получит токены владельца.
+    CHECK(repo::list_telegram_links(*state.db_pool->acquire(), squatter->id).empty());
+    CHECK(!repo::find_telegram_link(*state.db_pool->acquire(), tg.tg_user_id).has_value());
 
     // После привязки вход идёт обычным путём по google_sub; второй раз забирать нечего.
     CHECK(repo::find_user_by_google_sub(*state.db_pool->acquire(), sub).has_value());
